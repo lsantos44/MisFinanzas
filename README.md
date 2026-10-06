@@ -14,7 +14,7 @@ Tus datos viven en **tu** cuenta de Cloudflare. Nadie más, el autor de la app i
 
 ### 1. Despliega tu Worker
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/USUARIO/REPO)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/lsantos44/Finanzas)
 
 Pulsa el botón, autoriza tu cuenta de Cloudflare y espera. Se crea el Worker **y la base de datos**, ya vinculada: no tienes que tocar el panel.
 
