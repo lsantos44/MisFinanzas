@@ -75,7 +75,7 @@ GitHub es donde vive el código de este programa. El botón hace una copia en tu
 
 **Después pulsa este botón.** Ábrelo en una pestaña nueva para no perder esta guía: haz **clic con el botón derecho → *Abrir enlace en una pestaña nueva***, o **`Ctrl` + clic** (en Mac, `Cmd` + clic).
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/lsantos44/Finanzas)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/lsantos44/MisFinanzas)
 
 Qué va a pasar:
 
@@ -108,7 +108,7 @@ Son dos partes: pegar el programa y crear la base de datos.
 2. Elige **Start with Hello World** (empezar desde cero) y pulsa **Deploy**. Se crea un Worker vacío.
 3. Ponle el nombre `finanzas` si te lo pregunta.
 4. Cuando termine, pulsa **Edit code** (*Editar código*).
-5. Abre [este enlace](https://raw.githubusercontent.com/lsantos44/Finanzas/main/src/worker.js) en una pestaña nueva. Verás una pared de texto: es normal.
+5. Abre [este enlace](https://raw.githubusercontent.com/lsantos44/MisFinanzas/main/src/worker.js) en una pestaña nueva. Verás una pared de texto: es normal.
 6. Selecciona todo (`Ctrl+A`) y copia (`Ctrl+C`).
 7. Vuelve al editor de Cloudflare, haz clic dentro, selecciona todo lo que haya (`Ctrl+A`) y pega encima (`Ctrl+V`).
 8. Pulsa **Deploy** arriba a la derecha.
