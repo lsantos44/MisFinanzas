@@ -16,7 +16,7 @@ Nota para quien mantiene el proyecto, no para quien lo instala.
 
 | Enlace | Para quién |
 |---|---|
-| `https://finanzaspersonaleslsg.netlify.app` | Todo el mundo. Es la app |
+| `https://misfinanzas.cc` | Todo el mundo. Es la app |
 | `https://github.com/lsantos44/Finanzas` | Solo quien quiera sincronizar o conectar el banco |
 
 Mensaje tipo:

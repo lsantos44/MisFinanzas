@@ -12,7 +12,7 @@ database_id = "crear-al-desplegar"
 
 [vars]
 # La URL de la app. Admite varias separadas por comas.
-ALLOW_ORIGIN = "https://finanzaspersonaleslsg.netlify.app"
+ALLOW_ORIGIN = "https://misfinanzas.cc"
 # Proveedor de IA por defecto (solo si usas el proxy; cada usuario puede poner su clave en la app).
 UPSTREAM_BASE = "https://openrouter.ai/api/v1"
 

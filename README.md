@@ -170,7 +170,7 @@ Repite el proceso para decirle a tu Worker desde qué página se le puede hablar
 
 - **Type**: *Text* (texto normal, no secreto)
 - **Variable name**: `ALLOW_ORIGIN`
-- **Value**: la dirección de la app, por ejemplo `https://finanzaspersonaleslsg.netlify.app`
+- **Value**: la dirección de la app, por ejemplo `https://misfinanzas.cc`
 
 ---
 
