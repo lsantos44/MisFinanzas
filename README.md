@@ -49,40 +49,88 @@ Ya está. No tienes que configurar nada más aquí.
 
 ---
 
-## Paso 2 · Instalar tu copia con un botón
+## Paso 2 · Instalar tu copia
 
-Ahora vas a crear tu **Worker**: un programita que vive en Cloudflare y guarda tus datos. Se instala solo.
+Ahora vas a crear tu **Worker**: un programita que vive en Cloudflare y guarda tus datos.
 
-### Pulsa aquí
+Hay dos formas. Léelas antes de elegir, porque no se puede evitar una u otra molestia:
+
+| | **Camino A** · con GitHub | **Camino B** · sin GitHub |
+|---|---|---|
+| ¿Hace falta otra cuenta? | Sí, una de GitHub (gratis, 2 minutos) | No |
+| Instalar el programa | Un botón lo hace todo | Copiar y pegar un texto |
+| La base de datos | Se crea y se conecta sola | La creas tú, siguiendo 6 pasos |
+| Actualizar en el futuro | Automático | Volver a copiar y pegar |
+| Tiempo total | ~5 minutos | ~10 minutos |
+
+**Si no te importa crearte una cuenta de GitHub, elige el camino A**: es menos probable que algo salga mal. Si prefieres no registrarte en un sitio más, el camino B funciona igual de bien.
+
+---
+
+### Camino A · Con cuenta de GitHub
+
+GitHub es donde vive el código de este programa. El botón hace una copia en tu cuenta y la instala en tu Cloudflare.
+
+**Primero, si no tienes cuenta:** entra en [github.com/signup](https://github.com/signup), pon un correo, una contraseña y un nombre de usuario. Confirma el correo que te llegue. Ya está.
+
+**Después pulsa este botón.** Ábrelo en una pestaña nueva para no perder esta guía: haz **clic con el botón derecho → *Abrir enlace en una pestaña nueva***, o **`Ctrl` + clic** (en Mac, `Cmd` + clic).
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/lsantos44/Finanzas)
 
-### Qué va a pasar
+Qué va a pasar:
 
-1. Te pedirá entrar en tu cuenta de Cloudflare (la del paso 1).
-2. Te pedirá permiso para conectarse con GitHub. Acepta: es para copiar el programa a tu cuenta.
+1. Te pedirá entrar en tu cuenta de **Cloudflare** (la del paso 1).
+2. Te pedirá conectar con **GitHub** y autorizar. Si te pregunta a qué repositorios dar acceso, puedes elegir **solo el repositorio nuevo** que va a crear; no hace falta dar acceso a todo.
 3. Verás una pantalla de confirmación con el nombre `finanzas`. Pulsa **Deploy** (o *Create and deploy*).
-4. Espera uno o dos minutos.
+4. Espera uno o dos minutos mientras lo instala.
 
 <!-- CAPTURA 2 · Pantalla de confirmación antes de desplegar, con el botón Deploy visible.
      Guardar como docs/img/02-deploy.png y sustituir por:
      ![Pantalla de despliegue](docs/img/02-deploy.png) -->
 
-### Lo que te queda
-
-Al terminar verás una dirección parecida a esta:
-
-```
-https://finanzas.algo.workers.dev
-```
-
-**Cópiala y guárdala** en una nota. La vas a necesitar en el paso 4.
+Al terminar verás una dirección parecida a `https://finanzas.algo.workers.dev`. **Cópiala y guárdala**: la necesitas en el paso 4.
 
 <!-- CAPTURA 3 · Pantalla final con la dirección del Worker ya desplegado, señalada.
      Guardar como docs/img/03-url-worker.png y sustituir por:
      ![Dirección de tu Worker](docs/img/03-url-worker.png) -->
 
-> **¿Por qué un botón y no instalar algo en el ordenador?** Porque así tu copia vive en internet y el móvil y el ordenador pueden hablar con ella. No se instala nada en tus dispositivos.
+Con este camino **sáltate el apartado siguiente** y ve directo al paso 3.
+
+---
+
+### Camino B · Sin cuenta de GitHub
+
+Son dos partes: pegar el programa y crear la base de datos.
+
+#### B.1 · Crear el Worker y pegar el programa
+
+1. En Cloudflare, menú de la izquierda → **Workers & Pages** → botón **Create** (o *Create application*).
+2. Elige **Start with Hello World** (empezar desde cero) y pulsa **Deploy**. Se crea un Worker vacío.
+3. Ponle el nombre `finanzas` si te lo pregunta.
+4. Cuando termine, pulsa **Edit code** (*Editar código*).
+5. Abre [este enlace](https://raw.githubusercontent.com/lsantos44/Finanzas/main/src/worker.js) en una pestaña nueva. Verás una pared de texto: es normal.
+6. Selecciona todo (`Ctrl+A`) y copia (`Ctrl+C`).
+7. Vuelve al editor de Cloudflare, haz clic dentro, selecciona todo lo que haya (`Ctrl+A`) y pega encima (`Ctrl+V`).
+8. Pulsa **Deploy** arriba a la derecha.
+
+#### B.2 · Crear la base de datos
+
+1. Menú de la izquierda → **Storage & Databases** → **D1**.
+2. Botón **Create database**. Nombre: `finanzas`. Pulsa **Create**.
+3. Vuelve a **Workers & Pages** → tu Worker `finanzas` → pestaña **Settings**.
+4. Busca **Bindings** → botón **Add**.
+5. Elige **D1 database** y rellena:
+   - **Variable name**: escribe exactamente `DB` (dos letras, mayúsculas)
+   - **D1 database**: elige `finanzas`
+6. **Baja dentro de esa ventanita** hasta ver el botón de guardar y púlsalo. Después, **Deploy**.
+
+> ⚠️ Este es el paso donde más gente se atasca: **el botón de guardar queda fuera de la vista** y parece que el formulario no hace nada. Baja con la rueda del ratón **dentro de la ventana emergente**, no en la página.
+
+Tu dirección es la del Worker, del tipo `https://finanzas.algo.workers.dev`. La ves arriba en la pantalla del Worker. **Cópiala.**
+
+---
+
+> **¿Por qué no se instala nada en mi ordenador?** Porque tu copia vive en internet, y así el móvil y el ordenador pueden hablar con ella. En tus dispositivos no se instala nada.
 
 ---
 
@@ -215,7 +263,7 @@ Pulsa **Deploy** al terminar.
 
 | Lo que ves | Qué significa | Qué hacer |
 |---|---|---|
-| `"bindingDB":false` | La base de datos no se creó o no quedó conectada | Cloudflare → tu Worker → **Settings** → **Bindings** → *Add* → **D1 database**. Nombre: `DB`. Base: `finanzas` |
+| `"bindingDB":false` | La base de datos no quedó conectada | Repite el apartado **B.2** del paso 2, aunque hayas usado el camino A. Recuerda que el botón de guardar queda fuera de la vista |
 | `Falta el binding D1 llamado DB` | Lo mismo que arriba | Igual |
 | `No autorizado` o `401` | La contraseña de la app no coincide con la del Worker | Revisa que sean idénticas, sin espacios al principio o al final |
 | `Origen no permitido` | Falta `ALLOW_ORIGIN` o está mal escrito | Que sea la dirección exacta de la app, sin barra final |
