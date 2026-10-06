@@ -505,6 +505,57 @@ async function storeInit(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS store_history (k TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (k, version))").run();
 }
 
+// Bandeja de entrada: lo que el disparador programado baja del banco mientras la app está
+// cerrada. NO se clasifica aquí a propósito — las reglas, la memoria de activos y la
+// deduplicación contra tu histórico viven en la app, y duplicar esa lógica en el Worker sería
+// la receta para que las dos versiones se separen con el tiempo. El Worker captura; la app
+// clasifica al abrir. Así no se pierde nada aunque pases semanas sin entrar.
+async function inboxInit(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS inbox (k TEXT NOT NULL, bank_id TEXT NOT NULL, mov TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (k, bank_id))").run();
+}
+
+// Baja lo reciente de todas las conexiones guardadas y lo deja en la bandeja.
+// Se llama desde el cron (sin petición HTTP) y desde /store/refresh para poder probarlo.
+async function refreshInbox(env) {
+  if (!env.DB) return { error: "sin binding DB" };
+  const db = env.DB;
+  await storeInit(db); await inboxInit(db);
+  const rows = await db.prepare("SELECT k, payload FROM store").all();
+  const out = { cuentas: 0, nuevos: 0, errores: [] };
+  for (const row of rows.results || []) {
+    let bank;
+    try { bank = JSON.parse(row.payload).bank || {}; } catch { continue; }
+    const conns = bank.connections || [];
+    const desde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+    const hasta = new Date().toISOString().slice(0, 10);
+    for (const c of conns) {
+      if (!c.sessionId) continue;
+      try {
+        const sr = await ebFetch(env, `/sessions/${c.sessionId}`);
+        if (!sr.ok) { out.errores.push(`${c.aspsp}: sesión ${sr.status}`); continue; }
+        const sess = await sr.json();
+        const uids = (sess.accounts || []).map((a) => (typeof a === "string" ? a : (a && a.uid))).filter(Boolean)
+          .filter((u) => !c.accountUid || u === c.accountUid);
+        const budget = { left: 20 };
+        for (const uid of uids) {
+          out.cuentas++;
+          const txs = await ebAccountHistory(env, uid, desde, hasta, budget, {}, "");
+          const stmts = [];
+          for (const t of txs) {
+            if (t.status !== "BOOK") continue;
+            const m = mapEbTransaction(t, uid); m.accountUid = uid;
+            // La clave primaria (k, bank_id) hace que reejecutar el cron no duplique nada.
+            stmts.push(db.prepare("INSERT OR IGNORE INTO inbox (k, bank_id, mov, fetched_at) VALUES (?, ?, ?, ?)")
+              .bind(row.k, String(m.bankId), JSON.stringify({ ...m, _origen: c.aspsp || "Banco" }), Date.now()));
+          }
+          if (stmts.length) { await db.batch(stmts); out.nuevos += stmts.length; }
+        }
+      } catch (e) { out.errores.push(`${c.aspsp}: ${String((e && e.message) || e).slice(0, 120)}`); }
+    }
+  }
+  return out;
+}
+
 async function handleStore(request, env, url) {
   const cors = corsFor(request, env, "GET, PUT, OPTIONS");
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { ...cors, "Content-Type": "application/json; charset=utf-8" } });
@@ -548,6 +599,33 @@ async function handleStore(request, env, url) {
     const rs = await db.prepare("SELECT version, updated_at, length(payload) AS bytes FROM store_history WHERE k = ? ORDER BY version DESC").bind(k).all();
     return json({ versions: (rs.results || []).map((r) => ({ version: r.version, updatedAt: r.updated_at, bytes: r.bytes })) });
   }
+
+  // Lo que el cron ha ido capturando. La app lo ingiere y luego lo vacía.
+  if (url.pathname === "/store/inbox") {
+    await inboxInit(db);
+    if (request.method === "GET") {
+      const rs = await db.prepare("SELECT mov, fetched_at FROM inbox WHERE k = ? ORDER BY fetched_at").bind(k).all();
+      const movements = (rs.results || []).map((r) => { try { return JSON.parse(r.mov); } catch { return null; } }).filter(Boolean);
+      return json({ movements, count: movements.length });
+    }
+    if (request.method === "PUT") {
+      // Vaciar: la app ya los tiene. Se borra solo lo que había al leer, por si el cron ha
+      // metido algo nuevo entre medias.
+      const body = await request.json().catch(() => ({}));
+      const ids = Array.isArray(body.bankIds) ? body.bankIds.slice(0, 5000) : null;
+      if (ids && ids.length) {
+        const marks = ids.map(() => "?").join(",");
+        await db.prepare(`DELETE FROM inbox WHERE k = ? AND bank_id IN (${marks})`).bind(k, ...ids).run();
+      } else if (!ids) {
+        await db.prepare("DELETE FROM inbox WHERE k = ?").bind(k).run();
+      }
+      return json({ ok: true });
+    }
+    return json({ error: "método no permitido" }, 405);
+  }
+
+  // Forzar una captura ahora, para probar sin esperar al cron.
+  if (url.pathname === "/store/refresh") return json(await refreshInbox(env));
 
   if (request.method === "GET") {
     const row = await db.prepare("SELECT payload, version, updated_at FROM store WHERE k = ?").bind(k).first();
@@ -615,13 +693,19 @@ async function handleAI(request, env) {
 }
 
 export default {
+  // Disparador programado (Cloudflare → Worker → Settings → Triggers → Cron Triggers).
+  // Esto es lo que hace que los movimientos se bajen aunque no abras la app en semanas: el
+  // navegador no puede ejecutarse con la pestaña cerrada, pero el Worker sí.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(refreshInbox(env));
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/bank/")) {
       try { return await handleBank(request, env, url); }
       catch (e) { return new Response("Error banco: " + (e && e.message ? e.message : e), { status: 500 }); }
     }
-    if (url.pathname === "/store" || url.pathname === "/store/history" || url.pathname === "/store/status") {
+    if (url.pathname.startsWith("/store")) {
       try { return await handleStore(request, env, url); }
       catch (e) {
         // El motivo real importa: "no such table" o un binding mal puesto no se distinguen
