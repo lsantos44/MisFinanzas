@@ -59,7 +59,7 @@ Hay dos formas. Léelas antes de elegir, porque no se puede evitar una u otra mo
 |---|---|---|
 | ¿Hace falta otra cuenta? | Sí, una de GitHub (gratis, 2 minutos) | No |
 | Instalar el programa | Un botón lo hace todo | Copiar y pegar un texto |
-| La base de datos | Se crea y se conecta sola | La creas tú, siguiendo 6 pasos |
+| La base de datos | Normalmente se crea sola (si no, apartado B.2) | La creas tú, siguiendo 6 pasos |
 | Actualizar en el futuro | Automático | Volver a copiar y pegar |
 | Tiempo total | ~5 minutos | ~10 minutos |
 
@@ -89,6 +89,8 @@ Qué va a pasar:
      ![Pantalla de despliegue](docs/img/02-deploy.png) -->
 
 Al terminar verás una dirección parecida a `https://finanzas.algo.workers.dev`. **Cópiala y guárdala**: la necesitas en el paso 4.
+
+> Si más adelante la app te dice que **falta la base de datos**, no has hecho nada mal: a veces no se crea sola. Se arregla en dos minutos siguiendo el apartado **B.2** de aquí abajo.
 
 <!-- CAPTURA 3 · Pantalla final con la dirección del Worker ya desplegado, señalada.
      Guardar como docs/img/03-url-worker.png y sustituir por:

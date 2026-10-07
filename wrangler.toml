@@ -14,7 +14,7 @@ crons = ["0 */6 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "finanzas"
-database_id = "crear-al-desplegar"
+database_id = ""
 
 [vars]
 # La URL de la app. Admite varias separadas por comas.
