@@ -2,11 +2,11 @@ name = "finanzas"
 main = "src/worker.js"
 compatibility_date = "2026-09-01"
 
-# Disparador programado: cada 6 horas el Worker baja los movimientos del banco y los deja en
+# Disparador programado: cada 3 horas el Worker baja los movimientos del banco y los deja en
 # la bandeja, aunque no abras la app. Es lo que permite la sincronizacion en segundo plano,
 # que el navegador no puede hacer con la pestana cerrada.
 [triggers]
-crons = ["0 */6 * * *"]
+crons = ["0 */3 * * *"]
 
 # Declarar aquí la base de datos es lo que permite que el botón de despliegue la cree y la
 # vincule solo. Quien instale esto no tiene que entrar al panel a añadir el binding a mano,
