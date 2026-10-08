@@ -512,11 +512,14 @@ async function storeInit(db) {
 // clasifica al abrir. Así no se pierde nada aunque pases semanas sin entrar.
 async function inboxInit(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS inbox (k TEXT NOT NULL, bank_id TEXT NOT NULL, mov TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (k, bank_id))").run();
+  // Resultado de la última captura, por usuario. Sin esto el cron fallaba en silencio: la app
+  // no tenía forma de saber si llevaba días sin bajar nada o si funcionaba.
+  await db.prepare("CREATE TABLE IF NOT EXISTS inbox_log (k TEXT PRIMARY KEY, at INTEGER NOT NULL, result TEXT NOT NULL)").run();
 }
 
 // Baja lo reciente de todas las conexiones guardadas y lo deja en la bandeja.
 // Se llama desde el cron (sin petición HTTP) y desde /store/refresh para poder probarlo.
-async function refreshInbox(env) {
+async function refreshInbox(env, origen = "cron") {
   if (!env.DB) return { error: "sin binding DB" };
   const db = env.DB;
   await storeInit(db); await inboxInit(db);
@@ -525,6 +528,7 @@ async function refreshInbox(env) {
   for (const row of rows.results || []) {
     let bank;
     try { bank = JSON.parse(row.payload).bank || {}; } catch { continue; }
+    const mio = { origen, cuentas: 0, nuevos: 0, errores: [] };
     const conns = bank.connections || [];
     const desde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const hasta = new Date().toISOString().slice(0, 10);
@@ -532,13 +536,13 @@ async function refreshInbox(env) {
       if (!c.sessionId) continue;
       try {
         const sr = await ebFetch(env, `/sessions/${c.sessionId}`);
-        if (!sr.ok) { out.errores.push(`${c.aspsp}: sesión ${sr.status}`); continue; }
+        if (!sr.ok) { mio.errores.push(`${c.aspsp}: sesión ${sr.status}`); continue; }
         const sess = await sr.json();
         const uids = (sess.accounts || []).map((a) => (typeof a === "string" ? a : (a && a.uid))).filter(Boolean)
           .filter((u) => !c.accountUid || u === c.accountUid);
         const budget = { left: 20 };
         for (const uid of uids) {
-          out.cuentas++;
+          mio.cuentas++;
           const txs = await ebAccountHistory(env, uid, desde, hasta, budget, {}, "");
           const stmts = [];
           for (const t of txs) {
@@ -548,10 +552,14 @@ async function refreshInbox(env) {
             stmts.push(db.prepare("INSERT OR IGNORE INTO inbox (k, bank_id, mov, fetched_at) VALUES (?, ?, ?, ?)")
               .bind(row.k, String(m.bankId), JSON.stringify({ ...m, _origen: c.aspsp || "Banco" }), Date.now()));
           }
-          if (stmts.length) { await db.batch(stmts); out.nuevos += stmts.length; }
+          // Nuevos de verdad: INSERT OR IGNORE no cuenta lo que ya estaba en la bandeja.
+          if (stmts.length) { const rs = await db.batch(stmts); mio.nuevos += rs.reduce((n, r) => n + ((r.meta && r.meta.changes) || 0), 0); }
         }
-      } catch (e) { out.errores.push(`${c.aspsp}: ${String((e && e.message) || e).slice(0, 120)}`); }
+      } catch (e) { mio.errores.push(`${c.aspsp}: ${String((e && e.message) || e).slice(0, 120)}`); }
     }
+    if (!conns.length) mio.errores.push("no hay bancos conectados en la copia del servidor");
+    await db.prepare("INSERT OR REPLACE INTO inbox_log (k, at, result) VALUES (?, ?, ?)").bind(row.k, Date.now(), JSON.stringify(mio)).run();
+    out.cuentas += mio.cuentas; out.nuevos += mio.nuevos; out.errores.push(...mio.errores);
   }
   return out;
 }
@@ -625,7 +633,16 @@ async function handleStore(request, env, url) {
   }
 
   // Forzar una captura ahora, para probar sin esperar al cron.
-  if (url.pathname === "/store/refresh") return json(await refreshInbox(env));
+  if (url.pathname === "/store/refresh") return json(await refreshInbox(env, "manual"));
+
+  // Cómo fue la última captura (del cron o forzada). La app lo enseña en Ajustes → Banco.
+  if (url.pathname === "/store/cron") {
+    await inboxInit(db);
+    const row = await db.prepare("SELECT at, result FROM inbox_log WHERE k = ?").bind(k).first();
+    if (!row) return json({ at: null });
+    let r = {}; try { r = JSON.parse(row.result); } catch { /* noop */ }
+    return json({ at: row.at, ...r });
+  }
 
   if (request.method === "GET") {
     const row = await db.prepare("SELECT payload, version, updated_at FROM store WHERE k = ?").bind(k).first();
