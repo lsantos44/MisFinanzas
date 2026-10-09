@@ -1,0 +1,24 @@
+# Configuración de UNA instalación concreta (la del autor), para que Cloudflare la despliegue
+# sola en cada cambio del repositorio. Si instalas tu propio backend, NO uses este archivo: usa
+# el botón de despliegue o `wrangler.toml`, que crean tu propia base de datos.
+#
+# Comando de despliegue en Cloudflare (Workers → finanzas → Settings → Build):
+#   npx wrangler deploy -c wrangler.produccion.toml
+#
+# Los secretos (PROXY_TOKEN, EB_APP_ID, EB_PRIVATE_KEY, UPSTREAM_KEY) no van aquí: siguen en el
+# panel y un despliegue no los toca. Lo demás debe coincidir con wrangler.toml.
+name = "finanzas"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+
+[triggers]
+crons = ["0 */3 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "finanzas"
+database_id = "2f29bb34-ac0e-43ee-96d0-dbb29fcc5ead"
+
+[vars]
+ALLOW_ORIGIN = "https://misfinanzas.cc"
+UPSTREAM_BASE = "https://openrouter.ai/api/v1"
