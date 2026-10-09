@@ -83,6 +83,25 @@ function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&am
 // Página de error legible CON vuelta a la app. /bank/auth y /bank/callback escupían JSON crudo
 // o HTML sin enlace: al fallar la autorización te quedabas tirado en el dominio del Worker,
 // sin saber qué había pasado y sin camino de vuelta.
+// Autorización por token, CERRADA por defecto: sin PROXY_TOKEN no se autoriza nada. Antes cada
+// ruta comprobaba «si hay token, que coincida», así que un Worker recién instalado (o con el
+// secreto borrado por error) quedaba abierto a cualquiera que adivinara su dirección.
+// La comparación es de tiempo constante sobre los hashes: no deja medir cuántos caracteres
+// acierta un atacante.
+async function autorizado(request, env) {
+  if (!env.PROXY_TOKEN) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(request.headers.get("Authorization") || "")),
+    crypto.subtle.digest("SHA-256", enc.encode("Bearer " + env.PROXY_TOKEN)),
+  ]);
+  if (crypto.subtle.timingSafeEqual) return crypto.subtle.timingSafeEqual(a, b);
+  const x = new Uint8Array(a), y = new Uint8Array(b);
+  let d = 0;
+  for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i];
+  return d === 0;
+}
+
 function errorPage(env, titulo, detalle, status) {
   const app = (env.ALLOW_ORIGIN || "").replace(/\/+$/, "");
   const volver = app ? `<p><a href="${escapeHtml(app)}">&larr; Volver a la app</a></p>` : "";
@@ -198,12 +217,13 @@ function bankCors(request, env) { return corsFor(request, env); }
 async function handleBank(request, env, url) {
   const callback = url.origin + "/bank/callback";
   const psuH = psuHeaders(request, url); // van en todas las llamadas de datos al banco
+  if (!env.PROXY_TOKEN) return errorPage(env, "Este Worker aún no tiene contraseña", "Ponle una contraseña (secreto PROXY_TOKEN en Cloudflare) antes de conectar ningún banco.", 503);
 
   // Endpoint que llama la APP: devuelve los movimientos ya mapeados de la sesión.
   if (url.pathname === "/bank/transactions") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
     // `date_to` iba dos días en el FUTURO. Varios bancos españoles rechazan de plano un rango
@@ -263,7 +283,7 @@ async function handleBank(request, env, url) {
   if (url.pathname === "/bank/accounts") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
     const sr = await ebFetch(env, `/sessions/${sid}`);
@@ -308,7 +328,7 @@ async function handleBank(request, env, url) {
   if (url.pathname === "/bank/balance") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
     const wantUid = url.searchParams.get("account") || null;
@@ -340,7 +360,7 @@ async function handleBank(request, env, url) {
   if (url.pathname === "/bank/ping") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const r = await ebFetch(env, "/application");
     return new Response(await r.text(), { status: r.status, headers: { ...cors, "Content-Type": "application/json" } });
   }
@@ -349,7 +369,7 @@ async function handleBank(request, env, url) {
   if (url.pathname === "/bank/aspsps") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const country = url.searchParams.get("country") || "ES";
     const r = await ebFetch(env, "/aspsps?country=" + encodeURIComponent(country));
     return new Response(await r.text(), { status: r.status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -361,7 +381,7 @@ async function handleBank(request, env, url) {
   if (url.pathname === "/bank/revoke") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
     const r = await ebFetch(env, `/sessions/${sid}`, { method: "DELETE" });
@@ -373,7 +393,7 @@ async function handleBank(request, env, url) {
   if (url.pathname === "/bank/aspsp") {
     const cors = bankCors(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const info = await ebFindAspsp(env, url.searchParams.get("name") || "", url.searchParams.get("country") || "ES");
     return new Response(JSON.stringify(info || { error: "banco no encontrado" }), { status: info ? 200 : 404, headers: { ...cors, "Content-Type": "application/json" } });
   }
@@ -568,7 +588,10 @@ async function handleStore(request, env, url) {
   const cors = corsFor(request, env, "GET, PUT, OPTIONS");
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { ...cors, "Content-Type": "application/json; charset=utf-8" } });
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-  if (env.PROXY_TOKEN && request.headers.get("Authorization") !== "Bearer " + env.PROXY_TOKEN) return json({ error: "No autorizado" }, 401);
+  // /store/status sin token solo mientras el Worker no tiene contraseña: el asistente lo usa para
+  // comprobar la instalación antes de ponerla. Solo devuelve booleanos y recuentos.
+  const abiertoStatus = url.pathname === "/store/status" && !env.PROXY_TOKEN;
+  if (!abiertoStatus && !(await autorizado(request, env))) return json({ error: env.PROXY_TOKEN ? "No autorizado" : "Este Worker aún no tiene contraseña (PROXY_TOKEN): no acepta peticiones hasta que se la pongas." }, 401);
 
   // Estado de la configuracion: que ve el Worker realmente. Sin esto, "no se guarda el binding"
   // es indistinguible de "el binding esta pero falla la base", y se depura a ciegas desde el
@@ -688,10 +711,7 @@ async function handleAI(request, env) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   if (request.method !== "POST") return new Response("Solo POST", { status: 405, headers: cors });
   if (list.length && origin && !okOrigin) return new Response("Origen no permitido", { status: 403, headers: cors });
-  if (env.PROXY_TOKEN) {
-    const auth = request.headers.get("Authorization") || "";
-    if (auth !== "Bearer " + env.PROXY_TOKEN) return new Response("No autorizado", { status: 401, headers: cors });
-  }
+  if (!(await autorizado(request, env))) return new Response("No autorizado", { status: 401, headers: cors });
   const base = (env.UPSTREAM_BASE || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
   const path = new URL(request.url).pathname.replace(/^\/v1(?=\/)/, "");
   const target = base + (path.startsWith("/") ? path : "/" + path);
