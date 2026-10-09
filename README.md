@@ -128,6 +128,13 @@ Son dos partes: pegar el programa y crear la base de datos.
 
 > ⚠️ Este es el paso donde más gente se atasca: **el botón de guardar queda fuera de la vista** y parece que el formulario no hace nada. Baja con la rueda del ratón **dentro de la ventana emergente**, no en la página.
 
+#### B.3 · Programar la revisión automática
+
+Es lo que hace que los movimientos del banco entren aunque no abras la app. Con el camino A viene hecho; aquí hay que añadirlo:
+
+1. Tu Worker `finanzas` → pestaña **Settings** → **Trigger Events** (o *Triggers*) → **Add** → **Cron Triggers**.
+2. Escribe `0 */3 * * *` (cada 3 horas) y guarda.
+
 Tu dirección es la del Worker, del tipo `https://finanzas.algo.workers.dev`. La ves arriba en la pantalla del Worker. **Cópiala.**
 
 ---
@@ -178,35 +185,20 @@ Repite el proceso para decirle a tu Worker desde qué página se le puede hablar
 
 ## Paso 4 · Conectar la app con tu Worker
 
-1. Abre la app en el ordenador.
-2. Pulsa el icono de **ajustes** (la rueda dentada, arriba a la derecha).
-3. Busca la sección **Conexión bancaria**.
-4. En **URL del backend**, pega la dirección del paso 2.
-5. En **Token del backend**, pega la contraseña del paso 3.
+La app tiene un **asistente** que comprueba cada paso contra tu Worker según lo haces, así que no tienes que adivinar si algo ha salido bien.
 
-<!-- CAPTURA 5 · Ajustes de la app con los dos campos rellenos.
-     Guardar como docs/img/05-app-ajustes.png y sustituir por:
-     ![Ajustes de la app](docs/img/05-app-ajustes.png) -->
+1. Abre la app. En la portada pulsa **Conectar tu banco**. Si ya tienes datos, ve a la rueda dentada → **Banco** → *Abrir el asistente de conexión paso a paso*.
+2. Pega la dirección de tu Worker y pulsa **Comprobar**.
+3. En el paso de la contraseña, pulsa **Generar**, cópiala y ponla en Cloudflare como se explica en el paso 3 de esta guía. Pulsa **Comprobar que coincide**.
+4. **Mándate el enlace de acceso** cuando te lo ofrezca (botón *Enviármelo por email*). Es lo que te permitirá entrar desde el móvil, otro navegador u otro ordenador sin recordar nada.
 
-### Comprueba que funciona
+Al pasar de ese paso, la app deja activada la sincronización y guarda la primera copia en tu Worker.
 
-En esa misma pantalla, pulsa **Probar backend**. Debe aparecer una línea que empieza así:
+### En el móvil o en otro navegador
 
-```
-configuración del Worker: 200 OK · {"bindingDB":true, ... "baseDatos":"responde"}
-```
+Abre el correo «Mi acceso a Mis Finanzas» y toca el enlace, o abre la app, pulsa **Entrar** y pégalo. Llegan tus datos y tus bancos.
 
-Lo importante: **`"bindingDB":true`** y **`"baseDatos":"responde"`**. Si pone otra cosa, baja a *Si algo no funciona*.
-
-### Guarda por primera vez
-
-Baja hasta **Sincronizar con tu backend** y pulsa **Guardar**. Debe decir *«Guardado en tu Worker (versión 1)»*.
-
-Si lo ves, **ya está todo lo esencial**. Marca la casilla de sincronización automática y olvídate.
-
-### En el móvil
-
-Repite el paso 4 en el móvil con la misma dirección y la misma contraseña. Luego pulsa **Traer**. Aparecerán tus datos.
+> Si el asistente dice que **no sabe cuál es la dirección de la app**, falta la variable `ALLOW_ORIGIN` del paso 3.
 
 ---
 
@@ -228,8 +220,9 @@ Enable Banking es la empresa autorizada que habla con los bancos. Es gratis para
    https://finanzas.algo.workers.dev/bank/callback
    ```
    Tiene que coincidir **exactamente**, sin barra al final.
-5. Al crearla te descargará un archivo **`.pem`**. Guárdalo bien: es tu llave y no se puede volver a descargar.
-6. Copia también el **Application ID**.
+5. Para la clave, elige generarla en el navegador. Te descargará un archivo **`.pem`**. Guárdalo bien: es tu llave y no se puede volver a descargar. **Su nombre es el Application ID** (sin el `.pem`).
+6. Si te pide web de privacidad, de condiciones o un correo, pon la dirección de la app (`https://misfinanzas.cc`) y tu correo.
+7. **Activa la aplicación.** Este paso no es opcional: una aplicación de producción nace *inactiva* y no deja conectar ningún banco. Pulsa **Activate by linking accounts**, elige tu banco, identifícate como en su app y autoriza **todas** las cuentas que quieras ver luego en la app. Solo podrá leer esas.
 
 <!-- CAPTURA 6 · Panel de Enable Banking al crear la aplicación, con el campo de redirect URL.
      Guardar como docs/img/06-enablebanking.png y sustituir por:
@@ -250,14 +243,18 @@ Pulsa **Deploy** al terminar.
 
 ### 5.3 · Conectar el banco desde la app
 
-1. Ajustes → **Conexión bancaria** → **Añadir banco**.
+Lo más fácil es seguir en el asistente: comprueba tus credenciales (y avisa si la aplicación sigue inactiva), te deja elegir el banco y el titular, y al volver del banco elige la cuenta y baja los movimientos solo si solo tienes una.
+
+A mano:
+
+1. Ajustes → **Banco** → **Añadir banco**.
 2. Escribe el país (`ES` para España) y pulsa **Cargar bancos**.
 3. Elige tu banco en la lista.
 4. **Titular**: elige *Personal* o *Empresa / autónomo*. Si tus cuentas están a nombre de una empresa o eres autónomo, elige **Empresa**. Equivocarse aquí hace que la conexión parezca funcionar y luego no traiga nada.
 5. Pulsa **Conectar**. Te llevará a la web de tu banco para identificarte y autorizar.
 6. Al volver, pulsa **Ver cuentas**, elige la tuya y luego **Sincronizar**.
 
-> El permiso del banco **caduca a los 90 días** por ley. Cuando pase, la app te avisará y bastará con pulsar **Reconectar**.
+> El permiso del banco **caduca a los 90 días** por ley. Cuando pase, la app te avisará y bastará con pulsar **Reconectar**. Hazlo siempre desde el navegador donde usas la app: si firmas con la app del banco en el iPhone y al terminar se abre otro navegador, la app te dará un enlace para terminar en el bueno.
 
 ---
 
@@ -271,6 +268,8 @@ Pulsa **Deploy** al terminar.
 | `Origen no permitido` | Falta `ALLOW_ORIGIN` o está mal escrito | Que sea la dirección exacta de la app, sin barra final |
 | Relleno un formulario en Cloudflare y no se guarda | El botón está fuera de la vista | Baja **dentro** de la ventanita, no con la rueda de la página |
 | El banco pide identificarse, lo haces, y da error | Normalmente el **Titular** es incorrecto | Prueba con la otra opción (Personal ↔ Empresa) |
+| El asistente dice que la aplicación está **inactiva** | Falta activarla en Enable Banking | Paso 5.1, punto 7: *Activate by linking accounts* |
+| Conecta, pero no aparece la cuenta que quieres | No la vinculaste al activar la aplicación | En Enable Banking, vuelve a vincular cuentas e incluye esa |
 | Dice que sincroniza pero no trae nada nuevo | El permiso del banco ha caducado | Pulsa **Reconectar** |
 
 Si nada de esto encaja: Ajustes → **Probar backend**, copia todo lo que salga y pídele ayuda a quien te pasó la app. Ese texto dice exactamente qué está mal.
@@ -295,7 +294,7 @@ No. Mucha gente usa solo la importación del Excel que descarga de su banco.
 Enable Banking es un proveedor autorizado bajo la normativa europea PSD2. El acceso es de **solo lectura**: puede ver movimientos, nunca mover dinero. Y puedes revocarlo desde la web de tu banco cuando quieras.
 
 **¿Qué pasa si pierdo la contraseña del Worker?**
-Creas una nueva en Cloudflare siguiendo el paso 3 y la cambias en la app. Tus datos no se pierden.
+Si te mandaste el enlace de acceso, lo tienes en el correo. Si no, puedes crear una nueva en Cloudflare (paso 3), pero tu copia del servidor va ligada a la contraseña: con una nueva, el servidor empieza vacío. Tus datos vuelven desde cualquier navegador donde aún tengas la app (entra con la nueva contraseña y se guardan solos). Si no te queda ninguno, la copia antigua solo se recupera con la contraseña antigua.
 
 ---
 
