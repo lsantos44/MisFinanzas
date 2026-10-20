@@ -178,7 +178,9 @@ async function ebAccountHistory(env, uid, fromISO, toISO, budget, psuH, txStatus
       all = all.concat(await ebAccountTransactions(env, uid, new Date(winStart).toISOString().slice(0, 10), new Date(winEnd).toISOString().slice(0, 10), budget, psuH, txStatus));
     } catch (e) {
       const msg = String((e && e.message) || e);
-      const auth = /HTTP (401|403)/.test(msg); // consentimiento muerto: no hay reintento que valga
+      // Consentimiento muerto (401/403) o límite de accesos agotado (429): reintentar no arregla
+      // nada y, en el 429, gasta otra de las pocas consultas diarias que deja el banco.
+      const auth = /HTTP (401|403|429)/.test(msg);
       // Hay bancos que rechazan la ventana de 90 días aunque el consentimiento esté vivo. Antes
       // de dar la sincronización por perdida, se reintenta la ventana más reciente con 30 días:
       // así se distingue "el rango es demasiado ancho" de "la conexión está rota".
@@ -262,6 +264,7 @@ async function handleBank(request, env, url) {
         errors.push({ uid, error: String((e && e.message) || e).slice(0, 200) });
       }
     }
+    if (movements.length || !errors.length) await markSeen(env, sid);
     // Éxito parcial (una cuenta falla, otra no) sigue siendo 200: hay datos que ingerir.
     // Pero "ninguna cuenta ha respondido" es un fallo, y devolverlo como 200 con la lista vacía
     // es exactamente lo que hacía invisible el permiso caducado. Se propaga el estado real.
@@ -530,6 +533,18 @@ async function storeInit(db) {
 // deduplicación contra tu histórico viven en la app, y duplicar esa lógica en el Worker sería
 // la receta para que las dos versiones se separen con el tiempo. El Worker captura; la app
 // clasifica al abrir. Así no se pierde nada aunque pases semanas sin entrar.
+// La normativa (PSD2) deja al banco limitar a 4 al día las consultas hechas SIN el usuario
+// delante, por consentimiento; CaixaBank lo aplica (error HUB046, HTTP 429). Al agotarlas, el
+// banco bloquea también las consultas desde la app. Por eso el cron cuenta lo que hace la app:
+// si acaba de consultar el banco, el cron no repite.
+async function seenInit(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS bank_seen (session TEXT PRIMARY KEY, at INTEGER NOT NULL)").run();
+}
+async function markSeen(env, sid) {
+  if (!env.DB || !sid) return;
+  try { await seenInit(env.DB); await env.DB.prepare("INSERT OR REPLACE INTO bank_seen (session, at) VALUES (?, ?)").bind(sid, Date.now()).run(); } catch { /* best-effort */ }
+}
+
 async function inboxInit(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS inbox (k TEXT NOT NULL, bank_id TEXT NOT NULL, mov TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (k, bank_id))").run();
   // Resultado de la última captura, por usuario. Sin esto el cron fallaba en silencio: la app
@@ -542,18 +557,32 @@ async function inboxInit(db) {
 async function refreshInbox(env, origen = "cron") {
   if (!env.DB) return { error: "sin binding DB" };
   const db = env.DB;
-  await storeInit(db); await inboxInit(db);
+  await storeInit(db); await inboxInit(db); await seenInit(db);
   const rows = await db.prepare("SELECT k, payload FROM store").all();
+  const hoy = new Date().toISOString().slice(0, 10);
   const out = { cuentas: 0, nuevos: 0, errores: [] };
   for (const row of rows.results || []) {
     let bank;
     try { bank = JSON.parse(row.payload).bank || {}; } catch { continue; }
-    const mio = { origen, cuentas: 0, nuevos: 0, errores: [] };
+    const mio = { origen, cuentas: 0, nuevos: 0, errores: [], omitidas: [] };
+    // Si hoy el banco ya dijo «límite agotado», el cron no insiste hasta mañana (UTC): cada
+    // intento fallido también cuenta. Lo forzado a mano (/store/refresh) sí lo intenta.
+    let previo = null;
+    try { const pr = await db.prepare("SELECT at, result FROM inbox_log WHERE k = ?").bind(row.k).first(); if (pr) previo = { at: pr.at, ...JSON.parse(pr.result) }; } catch { /* sin registro */ }
+    const limiteHoy = origen === "cron" && previo && new Date(previo.at).toISOString().slice(0, 10) === hoy
+      && (previo.limite || (previo.errores || []).some((e) => /HTTP 429|HUB046/.test(e)));
     const conns = bank.connections || [];
-    const desde = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+    // 10 días basta con 3 pasadas al día; una ventana corta también pide menos páginas, y cada
+    // página es otra consulta al banco.
+    const desde = new Date(Date.now() - 10 * 86400000).toISOString().slice(0, 10);
     const hasta = new Date().toISOString().slice(0, 10);
     for (const c of conns) {
       if (!c.sessionId) continue;
+      if (limiteHoy) { mio.omitidas.push(`${c.aspsp}: límite diario del banco alcanzado, se reanuda mañana`); mio.limite = true; continue; }
+      if (origen === "cron") {
+        const vis = await db.prepare("SELECT at FROM bank_seen WHERE session = ?").bind(c.sessionId).first();
+        if (vis && Date.now() - vis.at < 4 * 3600000) { mio.omitidas.push(`${c.aspsp}: la app lo consultó hace poco`); continue; }
+      }
       try {
         const sr = await ebFetch(env, `/sessions/${c.sessionId}`);
         if (!sr.ok) { mio.errores.push(`${c.aspsp}: sesión ${sr.status}`); continue; }
@@ -575,7 +604,12 @@ async function refreshInbox(env, origen = "cron") {
           // Nuevos de verdad: INSERT OR IGNORE no cuenta lo que ya estaba en la bandeja.
           if (stmts.length) { const rs = await db.batch(stmts); mio.nuevos += rs.reduce((n, r) => n + ((r.meta && r.meta.changes) || 0), 0); }
         }
-      } catch (e) { mio.errores.push(`${c.aspsp}: ${String((e && e.message) || e).slice(0, 120)}`); }
+        await db.prepare("INSERT OR REPLACE INTO bank_seen (session, at) VALUES (?, ?)").bind(c.sessionId, Date.now()).run();
+      } catch (e) {
+        const m = String((e && e.message) || e);
+        if (/HTTP 429|HUB046/.test(m)) mio.limite = true;
+        mio.errores.push(`${c.aspsp}: ${m.slice(0, 120)}`);
+      }
     }
     if (!conns.length) mio.errores.push("no hay bancos conectados en la copia del servidor");
     await db.prepare("INSERT OR REPLACE INTO inbox_log (k, at, result) VALUES (?, ?, ?)").bind(row.k, Date.now(), JSON.stringify(mio)).run();
