@@ -34,6 +34,8 @@ La clave de almacenamiento es `SHA-256("finz:" + PROXY_TOKEN)` truncado a 16 byt
 
 Las tablas se crean con `CREATE TABLE IF NOT EXISTS` en cada petición: desplegar no exige migraciones.
 
+Tablas: `store` y `store_history` (la copia y sus 10 versiones anteriores), `inbox` (movimientos que el cron baja con la app cerrada), `inbox_log` (resultado de la última pasada del cron, que la app muestra en Ajustes → Banco) y `bank_seen` (cuándo se consultó por última vez cada sesión del banco). Esta última existe por el límite de PSD2 de 4 consultas diarias sin el usuario presente: el cron no consulta si la app lo hizo hace menos de 4 horas, ni insiste el día que el banco ya respondió 429.
+
 ### Enable Banking
 
 `/bank/aspsps`, `/bank/aspsp`, `/bank/auth`, `/bank/callback`, `/bank/accounts`, `/bank/transactions`, `/bank/balance`, `/bank/revoke`, `/bank/ping`.
