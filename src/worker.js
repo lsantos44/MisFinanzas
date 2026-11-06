@@ -136,7 +136,10 @@ function mapEbTransaction(tx, uid) {
   // sincronización. Se fabrica una clave determinista con lo que sí es estable (cuenta, fecha,
   // importe, concepto), legible para poder depurarla. `hasId:false` deja constancia.
   const bankId = ref || `h:${String(uid || "").slice(0, 8)}:${date || "?"}:${Math.round(amount * 100)}:${fnv1a(concept.toLowerCase())}`;
-  return { bankId, hasId: !!ref, date, amount, currency: tx.transaction_amount && tx.transaction_amount.currency, concept };
+  // Saldo tras el movimiento, si el banco lo da: permite saber el saldo al día sin pedir /balances.
+  const bat = tx.balance_after_transaction && tx.balance_after_transaction.balance_amount;
+  const saldo = bat && bat.amount != null && isFinite(Number(bat.amount)) ? Number(bat.amount) : undefined;
+  return { bankId, hasId: !!ref, date, amount, currency: tx.transaction_amount && tx.transaction_amount.currency, concept, ...(saldo !== undefined ? { saldo } : {}) };
 }
 
 // Baja los movimientos de una cuenta para UNA ventana de fechas (paginando con continuation_key).
@@ -349,8 +352,12 @@ async function handleBank(request, env, url) {
         const pick = list.find((b) => /ITAV|available/i.test(b.balance_type || "")) ||
                      list.find((b) => /CLBD|booked/i.test(b.balance_type || "")) || list[0];
         const amt = pick && pick.balance_amount;
+        // El contable (CLBD) y su fecha van aparte: con él y los movimientos ya contabilizados
+        // que lleguen después, la app mantiene el saldo al día sin volver a preguntar al banco.
+        const bk = list.find((b) => /CLBD|booked/i.test(b.balance_type || ""));
         balances.push({ uid, amount: amt ? Number(amt.amount) : null, currency: amt ? amt.currency : null,
-          type: pick ? pick.balance_type : null, at: pick ? (pick.reference_date || pick.last_change_date_time || null) : null });
+          type: pick ? pick.balance_type : null, at: pick ? (pick.reference_date || pick.last_change_date_time || null) : null,
+          ...(bk && bk.balance_amount ? { booked: Number(bk.balance_amount.amount), bookedAt: bk.reference_date || null } : {}) });
       } catch (e) { balances.push({ uid, error: String((e && e.message) || e).slice(0, 120) }); }
     }
     return new Response(JSON.stringify({ balances }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
