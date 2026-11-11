@@ -103,7 +103,7 @@ async function autorizado(request, env) {
 }
 
 function errorPage(env, titulo, detalle, status) {
-  const app = (env.ALLOW_ORIGIN || "").replace(/\/+$/, "");
+  const app = allowedOrigins(env)[0] || "";
   const volver = app ? `<p><a href="${escapeHtml(app)}">&larr; Volver a la app</a></p>` : "";
   return new Response(
     '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
@@ -209,7 +209,7 @@ function allowedOrigins(env) {
 function corsFor(request, env, methods = "GET, OPTIONS") {
   const list = allowedOrigins(env);
   const origin = (request.headers.get("Origin") || "").replace(/\/+$/, "");
-  const ok = list.includes(origin) || origin === "http://localhost:4173";
+  const ok = list.includes(origin);
   return {
     "Access-Control-Allow-Origin": ok ? origin : (list[0] || "*"),
     "Access-Control-Allow-Methods": methods,
@@ -240,7 +240,7 @@ async function handleBank(request, env, url) {
     // disponible para diagnóstico: ?tx_status=BOOK / PDNG / ALL.
     const txStatus = url.searchParams.get("tx_status") === "none" ? "" : (url.searchParams.get("tx_status") || "");
     const from = url.searchParams.get("from") || new Date(Date.now() - 730 * 86400000).toISOString().slice(0, 10);
-    const sr = await ebFetch(env, `/sessions/${sid}`);
+    const sr = await ebFetch(env, `/sessions/${encodeURIComponent(sid)}`);
     if (!sr.ok) return new Response(await sr.text(), { status: sr.status, headers: { ...cors, "Content-Type": "application/json" } });
     const sess = await sr.json();
     // Filtro opcional por cuenta: ?account=<uid> trae SOLO esa cuenta (para no mezclar cuentas).
@@ -292,7 +292,7 @@ async function handleBank(request, env, url) {
     if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
-    const sr = await ebFetch(env, `/sessions/${sid}`);
+    const sr = await ebFetch(env, `/sessions/${encodeURIComponent(sid)}`);
     if (!sr.ok) return new Response(await sr.text(), { status: sr.status, headers: { ...cors, "Content-Type": "application/json" } });
     const sess = await sr.json();
     const accounts = [];
@@ -338,7 +338,7 @@ async function handleBank(request, env, url) {
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
     const wantUid = url.searchParams.get("account") || null;
-    const sr = await ebFetch(env, `/sessions/${sid}`);
+    const sr = await ebFetch(env, `/sessions/${encodeURIComponent(sid)}`);
     if (!sr.ok) return new Response(await sr.text(), { status: sr.status, headers: { ...cors, "Content-Type": "application/json" } });
     const sess = await sr.json();
     const uids = (sess.accounts || []).map((a) => (typeof a === "string" ? a : (a && a.uid))).filter(Boolean).filter((u) => !wantUid || u === wantUid);
@@ -394,7 +394,7 @@ async function handleBank(request, env, url) {
     if (!(await autorizado(request, env))) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const sid = url.searchParams.get("session");
     if (!sid) return new Response(JSON.stringify({ error: "falta ?session=" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
-    const r = await ebFetch(env, `/sessions/${sid}`, { method: "DELETE" });
+    const r = await ebFetch(env, `/sessions/${encodeURIComponent(sid)}`, { method: "DELETE" });
     return new Response(await r.text() || JSON.stringify({ ok: r.ok, status: r.status }), { status: r.status, headers: { ...cors, "Content-Type": "application/json" } });
   }
 
@@ -435,9 +435,12 @@ async function handleBank(request, env, url) {
     // Con ?state=uuid se manda un UUID pelado, como antes de meterle datos dentro. Sirve para
     // reproducir byte a byte la petición que sí funcionaba en julio y poder afirmar, sin
     // suposiciones, si algo de NUESTRO lado cambió el resultado.
+    // Código de un solo uso que pone la app: vuelve con la sesión (&n=) y la app solo acepta la
+    // vuelta que ella misma inició. Un ?bank_session= fabricado no lo lleva.
+    const nonce = /^[A-Za-z0-9_-]{8,64}$/.test(url.searchParams.get("nonce") || "") ? url.searchParams.get("nonce") : "";
     const state = url.searchParams.get("state") === "uuid"
       ? crypto.randomUUID()
-      : b64urlStr(JSON.stringify({ n: name, c: country, p: psu, d: Math.round(secs / 86400), m: authMethod, r: Math.random().toString(36).slice(2, 8) }));
+      : b64urlStr(JSON.stringify({ n: name, c: country, p: psu, d: Math.round(secs / 86400), m: authMethod, r: Math.random().toString(36).slice(2, 8), ...(nonce ? { k: nonce } : {}) }));
     // `access` va con solo `valid_until`, que es lo que el banco viene aceptando: llega a mostrar
     // su login y admite la firma. Declarar balances/transactions (?access=full) queda como
     // variante a mano; ponerlo por defecto sería mover una variable que sabemos que no falla.
@@ -496,12 +499,15 @@ async function handleBank(request, env, url) {
     const sr = await ebFetch(env, "/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
     if (!sr.ok) return errorPage(env, "Error creando la sesión", `Enable Banking respondió ${sr.status}:\n\n` + (await sr.text()).slice(0, 1200), 200);
     const sess = await sr.json();
-    const app = (env.ALLOW_ORIGIN || "").replace(/\/+$/, "");
+    // ALLOW_ORIGIN admite varias webs separadas por comas: se vuelve a la primera.
+    const app = allowedOrigins(env)[0] || "";
     // Sin session_id no hay conexión posible: redirigir con el parámetro vacío dejaba a la app
     // sin hacer nada y sin decir nada, que es la peor de las salidas.
     if (!sess.session_id) return errorPage(env, "Enable Banking no ha devuelto session_id", JSON.stringify(sess, null, 2).slice(0, 1200), 200);
     if (!app) return errorPage(env, "Falta ALLOW_ORIGIN en el Worker", "No sé a qué URL devolverte. Tu sesión se ha creado igualmente:\n\nsession_id = " + sess.session_id, 200);
-    return Response.redirect(app + "/?bank_session=" + encodeURIComponent(sess.session_id), 302);
+    let nonce = "";
+    try { const st = JSON.parse(atob(String(url.searchParams.get("state") || "").replace(/-/g, "+").replace(/_/g, "/"))); if (/^[A-Za-z0-9_-]{8,64}$/.test(st.k || "")) nonce = st.k; } catch { /* state sin código */ }
+    return Response.redirect(app + "/?bank_session=" + encodeURIComponent(sess.session_id) + (nonce ? "&n=" + nonce : ""), 302);
   }
 
   return new Response("Ruta de banco no encontrada", { status: 404 });
@@ -518,7 +524,8 @@ async function handleBank(request, env, url) {
    Requiere un binding D1 llamado DB (Cloudflare → Worker → Settings → Bindings → D1).
    Si no está, las rutas responden con un mensaje claro en vez de romperse.
    ============================================================ */
-const STORE_MAX_BYTES = 4 * 1024 * 1024; // un error no debe poder llenar la base
+// D1 no admite filas de más de ~2 MB: por encima, el guardado fallaba con un 500 genérico.
+const STORE_MAX_BYTES = 1900000;
 const STORE_HISTORY = 10;                // versiones anteriores que se conservan
 
 // La clave se DERIVA del token en vez de ser fija: si algún día dos personas comparten un
@@ -591,7 +598,7 @@ async function refreshInbox(env, origen = "cron") {
         if (vis && Date.now() - vis.at < 4 * 3600000) { mio.omitidas.push(`${c.aspsp}: la app lo consultó hace poco`); continue; }
       }
       try {
-        const sr = await ebFetch(env, `/sessions/${c.sessionId}`);
+        const sr = await ebFetch(env, `/sessions/${encodeURIComponent(c.sessionId)}`);
         if (!sr.ok) { mio.errores.push(`${c.aspsp}: sesión ${sr.status}`); continue; }
         const sess = await sr.json();
         const uids = (sess.accounts || []).map((a) => (typeof a === "string" ? a : (a && a.uid))).filter(Boolean)
@@ -686,8 +693,14 @@ async function handleStore(request, env, url) {
       const body = await request.json().catch(() => ({}));
       const ids = Array.isArray(body.bankIds) ? body.bankIds.slice(0, 5000) : null;
       if (ids && ids.length) {
-        const marks = ids.map(() => "?").join(",");
-        await db.prepare(`DELETE FROM inbox WHERE k = ? AND bank_id IN (${marks})`).bind(k, ...ids).run();
+        // D1 admite unos 100 parámetros por consulta: con más, el borrado fallaba y la bandeja
+        // crecía para siempre. Se borra por lotes.
+        const lotes = [];
+        for (let i = 0; i < ids.length; i += 90) {
+          const lote = ids.slice(i, i + 90).map(String);
+          lotes.push(db.prepare(`DELETE FROM inbox WHERE k = ? AND bank_id IN (${lote.map(() => "?").join(",")})`).bind(k, ...lote));
+        }
+        await db.batch(lotes);
       } else if (!ids) {
         await db.prepare("DELETE FROM inbox WHERE k = ?").bind(k).run();
       }
@@ -716,7 +729,8 @@ async function handleStore(request, env, url) {
 
   if (request.method === "PUT") {
     const raw = await request.text();
-    if (raw.length > STORE_MAX_BYTES) return json({ error: `la copia pesa ${Math.round(raw.length / 1024)} KB y el máximo es ${Math.round(STORE_MAX_BYTES / 1024)} KB` }, 413);
+    const bytes = new TextEncoder().encode(raw).length;
+    if (bytes > STORE_MAX_BYTES) return json({ error: `la copia pesa ${Math.round(bytes / 1024)} KB y el máximo es ${Math.round(STORE_MAX_BYTES / 1024)} KB` }, 413);
     let body;
     try { body = JSON.parse(raw); } catch { return json({ error: "cuerpo no es JSON válido" }, 400); }
     if (!body || typeof body.payload !== "object" || body.payload === null) return json({ error: "falta payload" }, 400);
@@ -744,10 +758,11 @@ async function handleStore(request, env, url) {
 }
 
 /* ---------- Proxy de IA (rutas normales) ---------- */
+const AI_MAX_TOKENS = 8000;
 async function handleAI(request, env) {
   const list = allowedOrigins(env);
   const origin = (request.headers.get("Origin") || "").replace(/\/+$/, "");
-  const okOrigin = list.includes(origin) || origin === "http://localhost:4173";
+  const okOrigin = list.includes(origin);
   const cors = { ...corsFor(request, env, "POST, OPTIONS"), "Access-Control-Max-Age": "86400" };
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   if (request.method !== "POST") return new Response("Solo POST", { status: 405, headers: cors });
@@ -755,13 +770,19 @@ async function handleAI(request, env) {
   if (!(await autorizado(request, env))) return new Response("No autorizado", { status: 401, headers: cors });
   const base = (env.UPSTREAM_BASE || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
   const path = new URL(request.url).pathname.replace(/^\/v1(?=\/)/, "");
-  const target = base + (path.startsWith("/") ? path : "/" + path);
+  // Solo lo que usa la app, y con tope de respuesta: con el token se podía llamar a cualquier
+  // ruta del proveedor y pedir respuestas enormes a cuenta de tu crédito.
+  if (path !== "/chat/completions") return new Response(JSON.stringify({ error: { message: "Ruta no permitida" } }), { status: 404, headers: { ...cors, "Content-Type": "application/json" } });
+  let peticion;
+  try { peticion = JSON.parse(await request.text()); } catch { return new Response(JSON.stringify({ error: { message: "JSON no válido" } }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } }); }
+  for (const campo of ["max_tokens", "max_completion_tokens"]) if (typeof peticion[campo] !== "number" || peticion[campo] > AI_MAX_TOKENS) peticion[campo] = AI_MAX_TOKENS;
+  delete peticion.max_completion_tokens;
   let upstream;
   try {
-    upstream = await fetch(target, {
+    upstream = await fetch(base + "/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + (env.UPSTREAM_KEY || "") },
-      body: await request.text(),
+      body: JSON.stringify(peticion),
     });
   } catch (e) {
     return new Response(JSON.stringify({ error: { message: "El proxy no pudo contactar con el proveedor: " + e.message } }), { status: 502, headers: { ...cors, "Content-Type": "application/json" } });
