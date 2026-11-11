@@ -221,7 +221,7 @@ Enable Banking es la empresa autorizada que habla con los bancos. Es gratis para
    ```
    Tiene que coincidir **exactamente**, sin barra al final.
 5. Para la clave, elige generarla en el navegador. Te descargará un archivo **`.pem`**. Guárdalo bien: es tu llave y no se puede volver a descargar. **Su nombre es el Application ID** (sin el `.pem`).
-6. Si te pide web de privacidad, de condiciones o un correo, pon la dirección de la app (`https://misfinanzas.cc`) y tu correo.
+6. Si te pide web de privacidad o de condiciones, pon `https://misfinanzas.cc/privacidad.html`; y tu correo donde lo pida.
 7. **Activa la aplicación.** Este paso no es opcional: una aplicación de producción nace *inactiva* y no deja conectar ningún banco. Pulsa **Activate by linking accounts**, elige tu banco, identifícate como en su app y autoriza **todas** las cuentas que quieras ver luego en la app. Solo podrá leer esas.
 
 <!-- CAPTURA 6 · Panel de Enable Banking al crear la aplicación, con el campo de redirect URL.
@@ -279,7 +279,7 @@ Si nada de esto encaja: Ajustes → **Probar backend**, copia todo lo que salga 
 ## Preguntas frecuentes
 
 **¿Quién puede ver mis datos?**
-Solo tú. Viven en tu navegador y en tu cuenta de Cloudflare. Ni quien te pasó la app ni el autor tienen acceso.
+Solo tú. Viven en tu navegador y en tu cuenta de Cloudflare, a la que nadie más tiene acceso. Matiz honesto: la app que abres en misfinanzas.cc la publica su autor, y quien controla una web controla el código que ejecuta tu navegador. Si prefieres no depender de nadie, publica tu propia copia de la app (repositorio finanzas-app). Más detalle en la página de privacidad de la app (misfinanzas.cc/privacidad.html).
 
 **¿Esto va a costarme dinero?**
 No, con el plan gratuito de Cloudflare. Una copia de tus datos ocupa menos de 300 KB; el plan gratuito da 5 GB.

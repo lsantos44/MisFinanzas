@@ -31,7 +31,7 @@ El orden importa: primero que vean si les sirve, después el montaje. Al revés,
 
 ## Qué pasa cuando actualizas
 
-**La app** es un único despliegue tuyo en Netlify. Al subir una versión nueva, todos la reciben al recargar. Ventaja: arreglas algo y les llega. Responsabilidad: si rompes algo, también.
+**La app** es un único despliegue tuyo en Cloudflare (Workers, archivos estáticos). Al subir una versión nueva, todos la reciben al recargar. Ventaja: arreglas algo y les llega. Responsabilidad: si rompes algo, también.
 
 **El Worker** lo tiene cada uno. Si cambias el del repositorio, quien lo instaló por el camino A (GitHub) lo recibe al actualizar su copia; quien usó el camino B tiene que volver a copiar y pegar. Avisa cuando un cambio sea importante.
 
