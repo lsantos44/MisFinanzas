@@ -414,14 +414,16 @@ async function handleBank(request, env, url) {
     const country = url.searchParams.get("country") || "ES";
     if (!name) return errorPage(env, "Falta el banco", "Llama a /bank/auth?aspsp=NOMBRE&country=CC (los nombres válidos están en /bank/aspsps).", 400);
     // Pedíamos 10 días de consentimiento: la conexión se moría sola cada semana y media y la app
-    // seguía diciendo que todo iba bien. PSD2 permite 90; algunos bancos menos, así que pedimos
-    // lo máximo que admita ESTE banco sin pasarnos (pasarse hace que /auth falle).
+    // seguía diciendo que todo iba bien. Desde julio de 2023 PSD2 permite hasta 180 días sin
+    // repetir la autenticación (Reglamento Delegado UE 2022/2360); algunos bancos admiten menos,
+    // así que pedimos lo máximo que declare ESTE banco sin pasarnos (pasarse hace que /auth falle).
+    // Si el banco no declara nada, 90 días, como hasta ahora.
     const info = await ebFindAspsp(env, name, country);
     const maxSecs = Number(info && info.maximum_consent_validity) || 90 * 86400;
     // Los tres parámetros se pueden forzar por query (?days= ?psu= ?auth_method=) para poder
     // bisecar un "invalid_request" del banco sin tocar el código ni volver a desplegar.
     const qDays = Number(url.searchParams.get("days")) || 0;
-    const secs = qDays ? qDays * 86400 : Math.max(86400, Math.min(90 * 86400, maxSecs) - 600); // 10 min de margen
+    const secs = qDays ? qDays * 86400 : Math.max(86400, Math.min(180 * 86400, maxSecs) - 600); // 10 min de margen
     // Hay bancos que solo existen como "business" en Enable Banking; mandarles "personal" a
     // ciegas era un error garantizado al conectar.
     const psuTypes = (info && Array.isArray(info.psu_types)) ? info.psu_types : [];
@@ -526,6 +528,9 @@ async function handleBank(request, env, url) {
    ============================================================ */
 // D1 no admite filas de más de ~2 MB: por encima, el guardado fallaba con un 500 genérico.
 const STORE_MAX_BYTES = 1900000;
+const BACKEND_VERSION = "2026-11-12";
+// Capacidades que la app comprueba para avisar de que conviene actualizar el servidor.
+const BACKEND_RASGOS = ["nonce-banco", "borrar-servidor", "historial-30-dias", "saldo-contable", "saldo-por-movimiento", "permiso-180-dias"];
 const STORE_HISTORY = 10;                // versiones recientes que se conservan siempre
 const STORE_HISTORY_DAYS = 30;           // y, además, la última de cada día durante este tiempo
 
@@ -821,6 +826,11 @@ export default {
     if (url.pathname.startsWith("/bank/")) {
       try { return await handleBank(request, env, url); }
       catch (e) { return new Response("Error banco: " + (e && e.message ? e.message : e), { status: 500 }); }
+    }
+    // Versión del backend y qué sabe hacer: la app avisa si tu servidor está desactualizado
+    // (cada usuario tiene el suyo y no se actualiza solo). No expone nada privado.
+    if (url.pathname === "/version") {
+      return new Response(JSON.stringify({ version: BACKEND_VERSION, rasgos: BACKEND_RASGOS }), { status: 200, headers: { ...corsFor(request, env, "GET, OPTIONS"), "Content-Type": "application/json" } });
     }
     if (url.pathname.startsWith("/store")) {
       try { return await handleStore(request, env, url); }

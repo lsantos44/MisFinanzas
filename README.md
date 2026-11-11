@@ -60,7 +60,7 @@ Hay dos formas. Léelas antes de elegir, porque no se puede evitar una u otra mo
 | ¿Hace falta otra cuenta? | Sí, una de GitHub (gratis, 2 minutos) | No |
 | Instalar el programa | Un botón lo hace todo | Copiar y pegar un texto |
 | La base de datos | Normalmente se crea sola (si no, apartado B.2) | La creas tú, siguiendo 6 pasos |
-| Actualizar en el futuro | Automático | Volver a copiar y pegar |
+| Actualizar en el futuro | Pegar el archivo nuevo en tu copia de GitHub (se publica solo) | Volver a copiar y pegar en Cloudflare |
 | Tiempo total | ~5 minutos | ~10 minutos |
 
 **Si no te importa crearte una cuenta de GitHub, elige el camino A**: es menos probable que algo salga mal. Si prefieres no registrarte en un sitio más, el camino B funciona igual de bien.
@@ -301,3 +301,14 @@ Si te mandaste el enlace de acceso, lo tienes en el correo. Si no, puedes crear 
 ## Para quien sí sea técnico
 
 El detalle de las rutas, el control de versiones y el modelo de datos está en [TECNICO.md](TECNICO.md).
+
+---
+
+## Actualizar tu servidor
+
+La app te avisa en **Ajustes → Tus datos y sincronización** cuando a tu servidor le faltan mejoras. Tu servidor es tuyo y no se actualiza solo; para ponerlo al día:
+
+- **Si lo instalaste con el botón (camino A):** abre [el archivo `src/worker.js` original](https://github.com/lsantos44/MisFinanzas/blob/main/src/worker.js), pulsa el botón de copiar (*Copy raw file*), ve a tu copia del repositorio en GitHub, abre su `src/worker.js`, pulsa el lápiz (*Edit*), borra todo, pega y pulsa **Commit changes**. Cloudflare lo publica solo en uno o dos minutos.
+- **Si lo instalaste a mano (camino B):** copia el mismo archivo y pégalo en Cloudflare → tu Worker → **Edit code**, en lugar del anterior, y pulsa **Deploy**.
+
+Tus datos, tu contraseña (`PROXY_TOKEN`) y tus bancos no se tocan al actualizar.
