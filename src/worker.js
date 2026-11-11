@@ -526,7 +526,8 @@ async function handleBank(request, env, url) {
    ============================================================ */
 // D1 no admite filas de más de ~2 MB: por encima, el guardado fallaba con un 500 genérico.
 const STORE_MAX_BYTES = 1900000;
-const STORE_HISTORY = 10;                // versiones anteriores que se conservan
+const STORE_HISTORY = 10;                // versiones recientes que se conservan siempre
+const STORE_HISTORY_DAYS = 30;           // y, además, la última de cada día durante este tiempo
 
 // La clave se DERIVA del token en vez de ser fija: si algún día dos personas comparten un
 // Worker, sus datos quedan separados sin tener que construir un sistema de usuarios.
@@ -748,8 +749,12 @@ async function handleStore(request, env, url) {
     await db.batch([
       db.prepare("INSERT INTO store (k, payload, version, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(k) DO UPDATE SET payload = excluded.payload, version = excluded.version, updated_at = excluded.updated_at").bind(k, payloadStr, next, now),
       db.prepare("INSERT OR REPLACE INTO store_history (k, version, payload, updated_at) VALUES (?, ?, ?, ?)").bind(k, next, payloadStr, now),
-      // Poda: el historial es una red de seguridad, no un archivo histórico.
-      db.prepare("DELETE FROM store_history WHERE k = ? AND version <= ?").bind(k, next - STORE_HISTORY),
+      // Poda. Con guardados cada pocos segundos, «las 10 últimas» eran minutos de uso: de un
+      // error de ayer no quedaba nada. Se conservan las 10 últimas y la última de cada día
+      // de los últimos 30 días; el resto se borra.
+      db.prepare(`DELETE FROM store_history WHERE k = ?1 AND version <= ?2 AND version NOT IN (
+        SELECT MAX(version) FROM store_history WHERE k = ?1 AND updated_at >= ?3 GROUP BY updated_at / 86400000)`)
+        .bind(k, next - STORE_HISTORY, now - STORE_HISTORY_DAYS * 86400000),
     ]);
     return json({ ok: true, version: next, updatedAt: now });
   }
