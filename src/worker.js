@@ -634,7 +634,7 @@ async function refreshInbox(env, origen = "cron") {
 }
 
 async function handleStore(request, env, url) {
-  const cors = corsFor(request, env, "GET, PUT, OPTIONS");
+  const cors = corsFor(request, env, "GET, PUT, DELETE, OPTIONS");
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { ...cors, "Content-Type": "application/json; charset=utf-8" } });
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   // /store/status sin token solo mientras el Worker no tiene contraseña: el asistente lo usa para
@@ -720,6 +720,19 @@ async function handleStore(request, env, url) {
     if (!row) return json({ at: null });
     let r = {}; try { r = JSON.parse(row.result); } catch { /* noop */ }
     return json({ at: row.at, ...r });
+  }
+
+  // Borrar todo lo tuyo de este servidor: la copia, su historial, la bandeja y su registro.
+  // Lo pide «Borrar todo» de la app; sin esto, borrar en la app dejaba aquí tus datos.
+  if (request.method === "DELETE" && url.pathname === "/store") {
+    await inboxInit(db); await seenInit(db);
+    await db.batch([
+      db.prepare("DELETE FROM store WHERE k = ?").bind(k),
+      db.prepare("DELETE FROM store_history WHERE k = ?").bind(k),
+      db.prepare("DELETE FROM inbox WHERE k = ?").bind(k),
+      db.prepare("DELETE FROM inbox_log WHERE k = ?").bind(k),
+    ]);
+    return json({ ok: true, borrado: true });
   }
 
   if (request.method === "GET") {
@@ -814,7 +827,7 @@ export default {
       catch (e) {
         // El motivo real importa: "no such table" o un binding mal puesto no se distinguen
         // de un fallo de red si solo devolvemos 500 sin cuerpo.
-        return new Response(JSON.stringify({ error: "Error de almacenamiento: " + (e && e.message ? e.message : e) }), { status: 500, headers: { ...corsFor(request, env, "GET, PUT, OPTIONS"), "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: "Error de almacenamiento: " + (e && e.message ? e.message : e) }), { status: 500, headers: { ...corsFor(request, env, "GET, PUT, DELETE, OPTIONS"), "Content-Type": "application/json" } });
       }
     }
     return handleAI(request, env);
