@@ -312,3 +312,18 @@ La app te avisa en **Ajustes → Tus datos y sincronización** cuando a tu servi
 - **Si lo instalaste a mano (camino B):** copia el mismo archivo y pégalo en Cloudflare → tu Worker → **Edit code**, en lugar del anterior, y pulsa **Deploy**.
 
 Tus datos, tu contraseña (`PROXY_TOKEN`) y tus bancos no se tocan al actualizar.
+
+---
+
+## Licencia
+
+Copyright (C) 2026 lsantos44.
+
+Este programa es software libre: puedes redistribuirlo y modificarlo bajo los términos de la
+**GNU Affero General Public License, versión 3** (AGPL-3.0), publicada por la Free Software
+Foundation. Se distribuye **sin ninguna garantía**, ni siquiera la implícita de
+comerciabilidad o idoneidad para un fin concreto. El texto completo está en [LICENSE](LICENSE).
+
+En la práctica: puedes usarlo, instalar tu propia copia y modificarla. Si ofreces a otras
+personas una versión modificada (también como servicio web), tienes que publicar su código
+fuente con la misma licencia.
