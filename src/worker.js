@@ -528,9 +528,9 @@ async function handleBank(request, env, url) {
    ============================================================ */
 // D1 no admite filas de más de ~2 MB: por encima, el guardado fallaba con un 500 genérico.
 const STORE_MAX_BYTES = 1900000;
-const BACKEND_VERSION = "2026-11-12";
+const BACKEND_VERSION = "2026-11-25";
 // Capacidades que la app comprueba para avisar de que conviene actualizar el servidor.
-const BACKEND_RASGOS = ["nonce-banco", "borrar-servidor", "historial-30-dias", "saldo-contable", "saldo-por-movimiento", "permiso-180-dias"];
+const BACKEND_RASGOS = ["nonce-banco", "borrar-servidor", "historial-30-dias", "saldo-contable", "saldo-por-movimiento", "permiso-180-dias", "inversiones"];
 const STORE_HISTORY = 10;                // versiones recientes que se conservan siempre
 const STORE_HISTORY_DAYS = 30;           // y, además, la última de cada día durante este tiempo
 
@@ -730,8 +730,9 @@ async function handleStore(request, env, url) {
   // Borrar todo lo tuyo de este servidor: la copia, su historial, la bandeja y su registro.
   // Lo pide «Borrar todo» de la app; sin esto, borrar en la app dejaba aquí tus datos.
   if (request.method === "DELETE" && url.pathname === "/store") {
-    await inboxInit(db); await seenInit(db);
+    await inboxInit(db); await seenInit(db); await preciosInit(db);
     await db.batch([
+      db.prepare("DELETE FROM precios_seguir WHERE k = ?").bind(k),
       db.prepare("DELETE FROM store WHERE k = ?").bind(k),
       db.prepare("DELETE FROM store_history WHERE k = ?").bind(k),
       db.prepare("DELETE FROM inbox WHERE k = ?").bind(k),
@@ -814,12 +815,160 @@ async function handleAI(request, env) {
   return new Response(body, { status: upstream.status, headers: { ...cors, "Content-Type": upstream.headers.get("Content-Type") || "application/json" } });
 }
 
+/* ============================================================
+   INVERSIONES: precios diarios de acciones y fondos
+   ============================================================
+   Solo datos públicos (cotizaciones de cierre y valores liquidativos), de Yahoo Finance. Yahoo
+   solo ve qué símbolos pide este Worker, desde una dirección de Cloudflare: nunca quién eres ni
+   cuánto tienes. Las participaciones viven en la app, no aquí.
+   Las tablas son de precios (comunes) y de qué símbolos sigue cada clave. */
+const YAHOO_CABECERAS = { "User-Agent": "Mozilla/5.0 (compatible; MisFinanzas/1.0)", "Accept": "application/json" };
+const PRECIOS_MAX_POR_PASADA = 30; // margen bajo el límite de peticiones salientes por ejecución
+
+async function preciosInit(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS precios (simbolo TEXT NOT NULL, fecha TEXT NOT NULL, cierre REAL NOT NULL, PRIMARY KEY (simbolo, fecha))").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS precios_meta (simbolo TEXT PRIMARY KEY, divisa TEXT, nombre TEXT, actualizado INTEGER, error TEXT)").run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS precios_seguir (k TEXT NOT NULL, simbolo TEXT NOT NULL, PRIMARY KEY (k, simbolo))").run();
+}
+
+// Cierres diarios de un símbolo. range: "5d" para el día a día, "2y" al empezar a seguirlo.
+async function yahooSerie(simbolo, range) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(simbolo)}?range=${range}&interval=1d&includePrePost=false`;
+  const r = await fetch(url, { headers: YAHOO_CABECERAS });
+  if (!r.ok) throw new Error(`Yahoo respondió ${r.status}`);
+  const d = await r.json();
+  const res = d && d.chart && d.chart.result && d.chart.result[0];
+  if (!res) throw new Error((d && d.chart && d.chart.error && d.chart.error.description) || "símbolo no encontrado");
+  const meta = res.meta || {};
+  const ts = res.timestamp || [];
+  const cierres = (res.indicators && res.indicators.quote && res.indicators.quote[0] && res.indicators.quote[0].close) || [];
+  const off = (meta.gmtoffset || 0) * 1000;
+  const puntos = [];
+  for (let i = 0; i < ts.length; i++) {
+    const c = cierres[i];
+    if (typeof c !== "number" || !isFinite(c) || c <= 0) continue;
+    puntos.push([new Date(ts[i] * 1000 + off).toISOString().slice(0, 10), c]);
+  }
+  // Algunos fondos solo traen el último valor en la cabecera.
+  if (!puntos.length && typeof meta.regularMarketPrice === "number" && meta.regularMarketTime) {
+    puntos.push([new Date(meta.regularMarketTime * 1000 + off).toISOString().slice(0, 10), meta.regularMarketPrice]);
+  }
+  return { puntos, divisa: meta.currency || null, nombre: meta.longName || meta.shortName || null };
+}
+
+async function guardarSerie(db, simbolo, serie) {
+  const stmts = serie.puntos.map(([f, c]) => db.prepare("INSERT OR REPLACE INTO precios (simbolo, fecha, cierre) VALUES (?, ?, ?)").bind(simbolo, f, c));
+  stmts.push(db.prepare("INSERT OR REPLACE INTO precios_meta (simbolo, divisa, nombre, actualizado, error) VALUES (?, ?, ?, ?, NULL)").bind(simbolo, serie.divisa, serie.nombre, Date.now()));
+  for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
+}
+
+async function actualizarSimbolo(db, simbolo, range) {
+  try {
+    const serie = await yahooSerie(simbolo, range);
+    await guardarSerie(db, simbolo, serie);
+    return { simbolo, ok: true, puntos: serie.puntos.length, divisa: serie.divisa };
+  } catch (e) {
+    const msg = String((e && e.message) || e).slice(0, 200);
+    await db.prepare("INSERT INTO precios_meta (simbolo, error, actualizado) VALUES (?, ?, ?) ON CONFLICT(simbolo) DO UPDATE SET error = excluded.error").bind(simbolo, msg, Date.now()).run();
+    return { simbolo, ok: false, error: msg };
+  }
+}
+
+// Divisas de lo que se sigue que no sean euros: se sigue también su cambio (EURUSD=X…).
+function simbolosDivisa(divisas) {
+  return [...new Set(divisas.filter((d) => d && d !== "EUR" && /^[A-Z]{3}$/.test(d)).map((d) => `EUR${d}=X`))];
+}
+
+// Pasada diaria (cron): últimos días de todo lo que se sigue, lo más antiguo primero.
+async function refreshPrecios(env) {
+  if (!env.DB) return;
+  const db = env.DB;
+  await preciosInit(db);
+  const rs = await db.prepare("SELECT DISTINCT s.simbolo, m.actualizado, m.divisa FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo").all();
+  const filas = rs.results || [];
+  const divisas = simbolosDivisa(filas.map((f) => f.divisa));
+  const todos = [...filas.map((f) => ({ simbolo: f.simbolo, actualizado: f.actualizado || 0 })), ...divisas.map((s) => ({ simbolo: s, actualizado: 0 }))];
+  todos.sort((a, b) => a.actualizado - b.actualizado);
+  for (const f of todos.slice(0, PRECIOS_MAX_POR_PASADA)) await actualizarSimbolo(db, f.simbolo, "5d");
+}
+
+async function handleInversiones(request, env, url) {
+  const cors = corsFor(request, env, "GET, POST, OPTIONS");
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { ...cors, "Content-Type": "application/json; charset=utf-8" } });
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  if (!(await autorizado(request, env))) return json({ error: "No autorizado" }, 401);
+  if (!env.DB) return json({ error: "Falta el binding D1 llamado DB." }, 503);
+  const db = env.DB;
+  await preciosInit(db);
+  const k = await storeKey(env);
+
+  // Buscar por ISIN, ticker o nombre: candidatos con su tipo y bolsa, para elegir el bueno.
+  if (url.pathname === "/inversiones/buscar") {
+    const q = (url.searchParams.get("q") || "").trim().slice(0, 80);
+    if (!q) return json({ resultados: [] });
+    const r = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0&listsCount=0`, { headers: YAHOO_CABECERAS });
+    if (!r.ok) return json({ error: `Yahoo respondió ${r.status}` }, 502);
+    const d = await r.json().catch(() => ({}));
+    const resultados = (d.quotes || []).filter((x) => x.symbol).map((x) => ({
+      simbolo: x.symbol, nombre: x.longname || x.shortname || x.symbol, tipo: x.quoteType || null, bolsa: x.exchDisp || x.exchange || null,
+    }));
+    return json({ resultados });
+  }
+
+  // Qué símbolos sigue esta instalación. Los nuevos se descargan ya con dos años de historia.
+  if (url.pathname === "/inversiones/seguir" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const lista = [...new Set((Array.isArray(body.simbolos) ? body.simbolos : []).map((x) => String(x).trim()).filter((x) => x && x.length <= 40))].slice(0, 60);
+    const antes = new Set(((await db.prepare("SELECT simbolo FROM precios_seguir WHERE k = ?").bind(k).all()).results || []).map((x) => x.simbolo));
+    const stmts = [db.prepare("DELETE FROM precios_seguir WHERE k = ?").bind(k), ...lista.map((s) => db.prepare("INSERT OR IGNORE INTO precios_seguir (k, simbolo) VALUES (?, ?)").bind(k, s))];
+    await db.batch(stmts);
+    const conHistoria = new Set(((await db.prepare("SELECT simbolo FROM precios_meta WHERE actualizado IS NOT NULL AND error IS NULL").all()).results || []).map((x) => x.simbolo));
+    const nuevos = lista.filter((s) => !antes.has(s) || !conHistoria.has(s));
+    const estado = [];
+    for (const s of nuevos.slice(0, PRECIOS_MAX_POR_PASADA)) estado.push(await actualizarSimbolo(db, s, "2y"));
+    // Y el cambio de divisa de lo que no cotiza en euros.
+    const divs = ((await db.prepare(`SELECT divisa FROM precios_meta WHERE simbolo IN (${lista.map(() => "?").join(",") || "''"})`).bind(...lista).all()).results || []).map((x) => x.divisa);
+    for (const fx of simbolosDivisa(divs)) if (!conHistoria.has(fx)) estado.push(await actualizarSimbolo(db, fx, "2y"));
+    return json({ ok: true, siguiendo: lista.length, estado });
+  }
+
+  // Forzar la actualización ahora (botón «Actualizar precios»).
+  if (url.pathname === "/inversiones/actualizar" && request.method === "POST") {
+    const lista = ((await db.prepare("SELECT s.simbolo, m.divisa FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo WHERE s.k = ?").bind(k).all()).results || []);
+    const todos = [...lista.map((x) => x.simbolo), ...simbolosDivisa(lista.map((x) => x.divisa))];
+    const estado = [];
+    for (const s of todos.slice(0, PRECIOS_MAX_POR_PASADA)) estado.push(await actualizarSimbolo(db, s, "5d"));
+    return json({ ok: true, estado });
+  }
+
+  // Series de precios: lo que se sigue y sus divisas, desde una fecha.
+  if (url.pathname === "/inversiones/precios") {
+    const desde = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("desde") || "") ? url.searchParams.get("desde") : "2000-01-01";
+    const seg = ((await db.prepare("SELECT s.simbolo, m.divisa, m.nombre, m.actualizado, m.error FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo WHERE s.k = ?").bind(k).all()).results || []);
+    const simbolos = [...seg.map((x) => x.simbolo), ...simbolosDivisa(seg.map((x) => x.divisa))];
+    const meta = {};
+    for (const x of seg) meta[x.simbolo] = { divisa: x.divisa, nombre: x.nombre, actualizado: x.actualizado, error: x.error };
+    const series = {};
+    if (simbolos.length) {
+      const rs = await db.prepare(`SELECT simbolo, fecha, cierre FROM precios WHERE fecha >= ? AND simbolo IN (${simbolos.map(() => "?").join(",")}) ORDER BY fecha`).bind(desde, ...simbolos).all();
+      for (const r of rs.results || []) (series[r.simbolo] = series[r.simbolo] || []).push([r.fecha, r.cierre]);
+    }
+    return json({ series, meta });
+  }
+
+  return json({ error: "Ruta no encontrada" }, 404);
+}
+
 export default {
   // Disparador programado (Cloudflare → Worker → Settings → Triggers → Cron Triggers).
   // Esto es lo que hace que los movimientos se bajen aunque no abras la app en semanas: el
   // navegador no puede ejecutarse con la pestaña cerrada, pero el Worker sí.
   async scheduled(event, env, ctx) {
     ctx.waitUntil(refreshInbox(env));
+    // Precios: en la pasada de la noche (tras el cierre de las bolsas) y en la de la mañana
+    // (los fondos publican su valor liquidativo de madrugada). La de mediodía no hace falta.
+    const hora = new Date(event.scheduledTime || Date.now()).getUTCHours();
+    if (hora >= 20 || hora < 8) ctx.waitUntil(refreshPrecios(env).catch(() => {}));
   },
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -831,6 +980,10 @@ export default {
     // (cada usuario tiene el suyo y no se actualiza solo). No expone nada privado.
     if (url.pathname === "/version") {
       return new Response(JSON.stringify({ version: BACKEND_VERSION, rasgos: BACKEND_RASGOS }), { status: 200, headers: { ...corsFor(request, env, "GET, OPTIONS"), "Content-Type": "application/json" } });
+    }
+    if (url.pathname.startsWith("/inversiones/")) {
+      try { return await handleInversiones(request, env, url); }
+      catch (e) { return new Response(JSON.stringify({ error: "Error en inversiones: " + (e && e.message ? e.message : e) }), { status: 500, headers: { ...corsFor(request, env, "GET, POST, OPTIONS"), "Content-Type": "application/json" } }); }
     }
     if (url.pathname.startsWith("/store")) {
       try { return await handleStore(request, env, url); }
