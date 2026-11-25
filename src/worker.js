@@ -921,7 +921,7 @@ function parecido(nombre, candidato) {
   if (tiene(b, ["inc", "dist"]) !== tiene(a, ["inc", "dist"])) n -= 2;
   return n;
 }
-async function resolverCotizacion({ isin, nombre, tipo }) {
+async function resolverCotizacion({ isin, nombre, tipo, ticker = "", bolsa = "" }) {
   const vistos = new Map();
   const anotar = (lista) => { for (const c of lista) if (!vistos.has(c.simbolo)) vistos.set(c.simbolo, c); };
   const elegir = async (cands) => {
@@ -935,6 +935,19 @@ async function resolverCotizacion({ isin, nombre, tipo }) {
     anotar(porIsin);
     const r = await elegir(porIsin.slice(0, 5));
     if (r) return { simbolo: r.simbolo, nombre: r.nombre, via: "isin", puntos: r.puntos };
+  }
+  // Con el ticker que se ve en el bróker (VRT, SOI…): sus cotizaciones (VRT, SOI.PA…), y entre
+  // ellas la que más se parece al nombre (SOI en París es Soitec; en Nueva York, otra empresa).
+  if (ticker) {
+    const t = ticker.split(".")[0];
+    const porTicker = (await yahooBuscar(ticker)).filter((c) => (c.simbolo === t || c.simbolo.startsWith(t + ".")) && (c.tipo === "EQUITY" || c.tipo === "ETF"));
+    anotar(porTicker);
+    // La bolsa que muestra el bróker (Euronext Amsterdam, Nasdaq…) desempata entre cotizaciones
+    // de la misma empresa (ASML en Ámsterdam o en Nasdaq).
+    const pb = palabras(bolsa).filter((x) => !["euronext", "stock", "exchange", "the", "de", "bolsa"].includes(x));
+    for (const c of porTicker) c.puntaje = (nombre ? parecido(nombre, c.nombre) : 0) + (pb.length && palabras(c.bolsa).some((x) => pb.includes(x)) ? 3 : 0);
+    const r = await elegir(porTicker.filter((c) => !nombre || c.puntaje >= 1).slice(0, 4));
+    if (r) return { simbolo: r.simbolo, nombre: r.nombre, via: "ticker", puntos: r.puntos };
   }
   if (nombre) {
     const w = nombre.split(/\s+/);
@@ -986,7 +999,9 @@ async function handleInversiones(request, env, url) {
     const isin = (url.searchParams.get("isin") || "").trim().toUpperCase().slice(0, 12);
     const nombre = (url.searchParams.get("nombre") || "").trim().slice(0, 80);
     const tipo = url.searchParams.get("tipo") === "accion" ? "EQUITY" : "MUTUALFUND";
-    return json(await resolverCotizacion({ isin, nombre, tipo }));
+    const ticker = (url.searchParams.get("ticker") || "").trim().toUpperCase().replace(/[^A-Z0-9.-]/g, "").slice(0, 12);
+    const bolsa = (url.searchParams.get("bolsa") || "").trim().slice(0, 60);
+    return json(await resolverCotizacion({ isin, nombre, tipo, ticker, bolsa }));
   }
 
   // Qué símbolos sigue esta instalación. Los nuevos se descargan ya con dos años de historia.

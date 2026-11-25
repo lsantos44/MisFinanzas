@@ -71,7 +71,7 @@ Rutas con el mismo token que `/store`:
 | Ruta | Para qué |
 |---|---|
 | `GET /inversiones/buscar?q=` | Busca un ISIN, ticker o nombre en Yahoo Finance y devuelve candidatos (`simbolo`, `nombre`, `tipo`, `bolsa` y `puntos`: días con precio en el último mes), los que tienen historial primero. |
-| `GET /inversiones/resolver?isin=&nombre=&tipo=` | Elige sola la mejor cotización: por ISIN y, si ninguna tiene historial, por nombre, puntuando el parecido (clase, Acc/Inc, cubierto). |
+| `GET /inversiones/resolver?isin=&nombre=&tipo=&ticker=&bolsa=` | Elige sola la mejor cotización: por ISIN; si no, por ticker (desempatando por parecido del nombre y por la bolsa que muestra el bróker); si no, por nombre, puntuando el parecido (clase, Acc/Inc, cubierto). |
 | `POST /inversiones/seguir` `{simbolos:[…]}` | Fija la lista de símbolos que sigue tu instalación. Los nuevos se descargan con dos años de historia, y también el cambio de su divisa (`EURUSD=X`…). |
 | `POST /inversiones/actualizar` | Fuerza la actualización de los últimos días. |
 | `GET /inversiones/precios?desde=AAAA-MM-DD` | Series de cierres diarios de lo que sigues y de sus divisas. |
