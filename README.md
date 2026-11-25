@@ -134,6 +134,7 @@ Es lo que hace que los movimientos del banco entren aunque no abras la app. Con 
 
 1. Tu Worker `finanzas` → pestaña **Settings** → **Trigger Events** (o *Triggers*) → **Add** → **Cron Triggers**.
 2. Escribe `0 5,13,21 * * *` (tres veces al día) y guarda. No pongas más: el banco solo permite 4 consultas diarias sin ti delante y, si se agotan, bloquea también las de la app.
+3. Opcional, si sigues inversiones en la app: añade otro con `*/30 7-21 * * 1-5`. Actualiza cada media hora, en horario de bolsa, los precios de tus acciones. Ese no toca el banco.
 
 Tu dirección es la del Worker, del tipo `https://finanzas.algo.workers.dev`. La ves arriba en la pantalla del Worker. **Cópiala.**
 

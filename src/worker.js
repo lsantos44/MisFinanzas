@@ -528,9 +528,9 @@ async function handleBank(request, env, url) {
    ============================================================ */
 // D1 no admite filas de más de ~2 MB: por encima, el guardado fallaba con un 500 genérico.
 const STORE_MAX_BYTES = 1900000;
-const BACKEND_VERSION = "2026-11-25";
+const BACKEND_VERSION = "2026-11-26";
 // Capacidades que la app comprueba para avisar de que conviene actualizar el servidor.
-const BACKEND_RASGOS = ["nonce-banco", "borrar-servidor", "historial-30-dias", "saldo-contable", "saldo-por-movimiento", "permiso-180-dias", "inversiones"];
+const BACKEND_RASGOS = ["nonce-banco", "borrar-servidor", "historial-30-dias", "saldo-contable", "saldo-por-movimiento", "permiso-180-dias", "inversiones", "inversiones-intradia"];
 const STORE_HISTORY = 10;                // versiones recientes que se conservan siempre
 const STORE_HISTORY_DAYS = 30;           // y, además, la última de cada día durante este tiempo
 
@@ -829,6 +829,9 @@ async function preciosInit(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS precios (simbolo TEXT NOT NULL, fecha TEXT NOT NULL, cierre REAL NOT NULL, PRIMARY KEY (simbolo, fecha))").run();
   await db.prepare("CREATE TABLE IF NOT EXISTS precios_meta (simbolo TEXT PRIMARY KEY, divisa TEXT, nombre TEXT, actualizado INTEGER, error TEXT)").run();
   await db.prepare("CREATE TABLE IF NOT EXISTS precios_seguir (k TEXT NOT NULL, simbolo TEXT NOT NULL, PRIMARY KEY (k, simbolo))").run();
+  // Columnas añadidas después (tipo de instrumento y hora del último precio): si ya existen, el
+  // ALTER falla y no pasa nada.
+  for (const col of ["tipo TEXT", "mercado INTEGER"]) { try { await db.prepare(`ALTER TABLE precios_meta ADD COLUMN ${col}`).run(); } catch { /* ya está */ } }
 }
 
 // Cierres diarios de un símbolo. range: "5d" para el día a día, "2y" al empezar a seguirlo.
@@ -849,16 +852,20 @@ async function yahooSerie(simbolo, range) {
     if (typeof c !== "number" || !isFinite(c) || c <= 0) continue;
     puntos.push([new Date(ts[i] * 1000 + off).toISOString().slice(0, 10), c]);
   }
-  // Algunos fondos solo traen el último valor en la cabecera.
-  if (!puntos.length && typeof meta.regularMarketPrice === "number" && meta.regularMarketTime) {
-    puntos.push([new Date(meta.regularMarketTime * 1000 + off).toISOString().slice(0, 10), meta.regularMarketPrice]);
+  // El último precio de la cabecera es el más reciente (durante la sesión, el de ahora mismo con
+  // el retraso de Yahoo): sustituye o completa el del día. Algunos fondos solo traen este.
+  if (typeof meta.regularMarketPrice === "number" && meta.regularMarketPrice > 0 && meta.regularMarketTime) {
+    const f = new Date(meta.regularMarketTime * 1000 + off).toISOString().slice(0, 10);
+    const ult = puntos[puntos.length - 1];
+    if (!ult || f > ult[0]) puntos.push([f, meta.regularMarketPrice]);
+    else if (f === ult[0]) ult[1] = meta.regularMarketPrice;
   }
-  return { puntos, divisa: meta.currency || null, nombre: meta.longName || meta.shortName || null };
+  return { puntos, divisa: meta.currency || null, nombre: meta.longName || meta.shortName || null, tipo: meta.instrumentType || null, mercado: meta.regularMarketTime ? meta.regularMarketTime * 1000 : null };
 }
 
 async function guardarSerie(db, simbolo, serie) {
   const stmts = serie.puntos.map(([f, c]) => db.prepare("INSERT OR REPLACE INTO precios (simbolo, fecha, cierre) VALUES (?, ?, ?)").bind(simbolo, f, c));
-  stmts.push(db.prepare("INSERT OR REPLACE INTO precios_meta (simbolo, divisa, nombre, actualizado, error) VALUES (?, ?, ?, ?, NULL)").bind(simbolo, serie.divisa, serie.nombre, Date.now()));
+  stmts.push(db.prepare("INSERT OR REPLACE INTO precios_meta (simbolo, divisa, nombre, actualizado, error, tipo, mercado) VALUES (?, ?, ?, ?, NULL, ?, ?)").bind(simbolo, serie.divisa, serie.nombre, Date.now(), serie.tipo, serie.mercado));
   for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
 }
 
@@ -879,17 +886,71 @@ function simbolosDivisa(divisas) {
   return [...new Set(divisas.filter((d) => d && d !== "EUR" && /^[A-Z]{3}$/.test(d)).map((d) => `EUR${d}=X`))];
 }
 
-// Pasada diaria (cron): últimos días de todo lo que se sigue, lo más antiguo primero.
-async function refreshPrecios(env) {
+// Pasada del cron: últimos días de lo que se sigue, lo más antiguo primero. La de cada media hora
+// (intradia) solo toca lo que cotiza durante el día (acciones, ETF y divisas): un fondo publica un
+// único valor liquidativo diario y pedirlo cada media hora no aporta nada.
+async function refreshPrecios(env, { intradia = false } = {}) {
   if (!env.DB) return;
   const db = env.DB;
   await preciosInit(db);
-  const rs = await db.prepare("SELECT DISTINCT s.simbolo, m.actualizado, m.divisa FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo").all();
-  const filas = rs.results || [];
+  const rs = await db.prepare("SELECT DISTINCT s.simbolo, m.actualizado, m.divisa, m.tipo FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo").all();
+  const filas = (rs.results || []).filter((f) => !intradia || f.tipo !== "MUTUALFUND");
   const divisas = simbolosDivisa(filas.map((f) => f.divisa));
   const todos = [...filas.map((f) => ({ simbolo: f.simbolo, actualizado: f.actualizado || 0 })), ...divisas.map((s) => ({ simbolo: s, actualizado: 0 }))];
   todos.sort((a, b) => a.actualizado - b.actualizado);
   for (const f of todos.slice(0, PRECIOS_MAX_POR_PASADA)) await actualizarSimbolo(db, f.simbolo, "5d");
+}
+
+async function yahooBuscar(q) {
+  const r = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=10&newsCount=0&listsCount=0`, { headers: YAHOO_CABECERAS });
+  if (!r.ok) return [];
+  const d = await r.json().catch(() => ({}));
+  return (d.quotes || []).filter((x) => x.symbol).map((x) => ({ simbolo: x.symbol, nombre: x.longname || x.shortname || x.symbol, tipo: x.quoteType || null, bolsa: x.exchDisp || x.exchange || null }));
+}
+async function puntosRecientes(simbolo) {
+  try { const s = await yahooSerie(simbolo, "1mo"); return s.puntos.length; } catch { return 0; }
+}
+const palabras = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
+function parecido(nombre, candidato) {
+  const a = palabras(nombre), b = palabras(candidato);
+  let n = 0;
+  for (const x of b) if (a.some((y) => y === x || (x.length >= 3 && y.length >= 3 && (y.startsWith(x) || x.startsWith(y))))) n++;
+  const tiene = (l, w) => l.some((x) => w.includes(x));
+  // Contradicciones de clase: penalizan más que lo que suma una palabra.
+  if (tiene(b, ["hdg", "hedged", "h"]) && !tiene(a, ["hdg", "hedged", "cubierto", "h"])) n -= 2;
+  if (tiene(b, ["inc", "dist"]) !== tiene(a, ["inc", "dist"])) n -= 2;
+  return n;
+}
+async function resolverCotizacion({ isin, nombre, tipo }) {
+  const vistos = new Map();
+  const anotar = (lista) => { for (const c of lista) if (!vistos.has(c.simbolo)) vistos.set(c.simbolo, c); };
+  const elegir = async (cands) => {
+    for (const c of cands) if (c.puntos == null) c.puntos = await puntosRecientes(c.simbolo);
+    const buenos = cands.filter((c) => c.puntos >= 10);
+    buenos.sort((x, y) => (y.puntaje ?? 0) - (x.puntaje ?? 0) || (y.tipo === tipo) - (x.tipo === tipo) || y.puntos - x.puntos);
+    return buenos[0] || null;
+  };
+  if (isin) {
+    const porIsin = await yahooBuscar(isin);
+    anotar(porIsin);
+    const r = await elegir(porIsin.slice(0, 5));
+    if (r) return { simbolo: r.simbolo, nombre: r.nombre, via: "isin", puntos: r.puntos };
+  }
+  if (nombre) {
+    const w = nombre.split(/\s+/);
+    for (const q of [nombre, w.slice(0, 4).join(" "), w.slice(0, 3).join(" ")]) {
+      if (!q || q.split(" ").length < 2) continue;
+      anotar(await yahooBuscar(q));
+      if (vistos.size >= 6) break;
+    }
+    const cands = [...vistos.values()].filter((c) => c.tipo === tipo || c.tipo === "ETF");
+    for (const c of cands) c.puntaje = parecido(nombre, c.nombre);
+    cands.sort((x, y) => y.puntaje - x.puntaje);
+    const minimo = Math.max(2, Math.ceil(palabras(nombre).length / 2));
+    const r = await elegir(cands.filter((c) => c.puntaje >= minimo).slice(0, 4));
+    if (r) return { simbolo: r.simbolo, nombre: r.nombre, via: "nombre", puntos: r.puntos };
+  }
+  return { simbolo: null };
 }
 
 async function handleInversiones(request, env, url) {
@@ -912,7 +973,20 @@ async function handleInversiones(request, env, url) {
     const resultados = (d.quotes || []).filter((x) => x.symbol).map((x) => ({
       simbolo: x.symbol, nombre: x.longname || x.shortname || x.symbol, tipo: x.quoteType || null, bolsa: x.exchDisp || x.exchange || null,
     }));
+    // Cuántos días de precio tiene cada uno en el último mes: una cotización con un solo dato
+    // (un listado de bolsa sin negociación) no sirve para seguir un fondo.
+    await Promise.all(resultados.slice(0, 6).map(async (r) => { r.puntos = await puntosRecientes(r.simbolo); }));
+    resultados.sort((a, b) => (b.puntos ?? -1) - (a.puntos ?? -1));
     return json({ resultados });
+  }
+
+  // Elegir sola la mejor cotización para un producto: por ISIN y, si no hay una con historial,
+  // por nombre, puntuando el parecido (clase R/I, Acc/Inc, cubierto o no).
+  if (url.pathname === "/inversiones/resolver") {
+    const isin = (url.searchParams.get("isin") || "").trim().toUpperCase().slice(0, 12);
+    const nombre = (url.searchParams.get("nombre") || "").trim().slice(0, 80);
+    const tipo = url.searchParams.get("tipo") === "accion" ? "EQUITY" : "MUTUALFUND";
+    return json(await resolverCotizacion({ isin, nombre, tipo }));
   }
 
   // Qué símbolos sigue esta instalación. Los nuevos se descargan ya con dos años de historia.
@@ -944,10 +1018,10 @@ async function handleInversiones(request, env, url) {
   // Series de precios: lo que se sigue y sus divisas, desde una fecha.
   if (url.pathname === "/inversiones/precios") {
     const desde = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("desde") || "") ? url.searchParams.get("desde") : "2000-01-01";
-    const seg = ((await db.prepare("SELECT s.simbolo, m.divisa, m.nombre, m.actualizado, m.error FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo WHERE s.k = ?").bind(k).all()).results || []);
+    const seg = ((await db.prepare("SELECT s.simbolo, m.divisa, m.nombre, m.actualizado, m.error, m.tipo, m.mercado FROM precios_seguir s LEFT JOIN precios_meta m ON m.simbolo = s.simbolo WHERE s.k = ?").bind(k).all()).results || []);
     const simbolos = [...seg.map((x) => x.simbolo), ...simbolosDivisa(seg.map((x) => x.divisa))];
     const meta = {};
-    for (const x of seg) meta[x.simbolo] = { divisa: x.divisa, nombre: x.nombre, actualizado: x.actualizado, error: x.error };
+    for (const x of seg) meta[x.simbolo] = { divisa: x.divisa, nombre: x.nombre, actualizado: x.actualizado, error: x.error, tipo: x.tipo, mercado: x.mercado };
     const series = {};
     if (simbolos.length) {
       const rs = await db.prepare(`SELECT simbolo, fecha, cierre FROM precios WHERE fecha >= ? AND simbolo IN (${simbolos.map(() => "?").join(",")}) ORDER BY fecha`).bind(desde, ...simbolos).all();
@@ -964,6 +1038,9 @@ export default {
   // Esto es lo que hace que los movimientos se bajen aunque no abras la app en semanas: el
   // navegador no puede ejecutarse con la pestaña cerrada, pero el Worker sí.
   async scheduled(event, env, ctx) {
+    // Disparador de cada media hora en horario de bolsa: solo precios, nunca el banco (PSD2 limita
+    // las consultas sin ti delante a 4 al día).
+    if (String(event.cron || "").startsWith("*/")) { ctx.waitUntil(refreshPrecios(env, { intradia: true }).catch(() => {})); return; }
     ctx.waitUntil(refreshInbox(env));
     // Precios: en la pasada de la noche (tras el cierre de las bolsas) y en la de la mañana
     // (los fondos publican su valor liquidativo de madrugada). La de mediodía no hace falta.
