@@ -70,9 +70,10 @@ Rutas con el mismo token que `/store`:
 
 | Ruta | Para qué |
 |---|---|
-| `GET /inversiones/buscar?q=` | Busca un ISIN, ticker o nombre en Yahoo Finance y devuelve candidatos (`simbolo`, `nombre`, `tipo`, `bolsa`). |
+| `GET /inversiones/buscar?q=` | Busca un ISIN, ticker o nombre en Yahoo Finance y devuelve candidatos (`simbolo`, `nombre`, `tipo`, `bolsa` y `puntos`: días con precio en el último mes), los que tienen historial primero. |
+| `GET /inversiones/resolver?isin=&nombre=&tipo=` | Elige sola la mejor cotización: por ISIN y, si ninguna tiene historial, por nombre, puntuando el parecido (clase, Acc/Inc, cubierto). |
 | `POST /inversiones/seguir` `{simbolos:[…]}` | Fija la lista de símbolos que sigue tu instalación. Los nuevos se descargan con dos años de historia, y también el cambio de su divisa (`EURUSD=X`…). |
 | `POST /inversiones/actualizar` | Fuerza la actualización de los últimos días. |
 | `GET /inversiones/precios?desde=AAAA-MM-DD` | Series de cierres diarios de lo que sigues y de sus divisas. |
 
-Tablas: `precios` (cierres por símbolo y fecha, datos públicos), `precios_meta` (divisa, nombre, última actualización y error) y `precios_seguir` (qué sigue cada clave). El cron actualiza los precios en sus pasadas de las 21:00 y las 05:00 UTC: la de la noche recoge los cierres del día y la de la mañana los valores liquidativos de los fondos, que se publican de madrugada. Yahoo solo ve los símbolos que se piden, nunca las participaciones, que viven en la app.
+Tablas: `precios` (cierres por símbolo y fecha, datos públicos), `precios_meta` (divisa, nombre, última actualización y error) y `precios_seguir` (qué sigue cada clave). Hay un segundo disparador, `*/30 7-21 * * 1-5`, que cada media hora en horario de bolsa actualiza acciones, ETF y divisas (nunca el banco ni los fondos, que publican un valor al día). Además, el cron diario actualiza todo en sus pasadas de las 21:00 y las 05:00 UTC: la de la noche recoge los cierres del día y la de la mañana los valores liquidativos de los fondos, que se publican de madrugada. Yahoo solo ve los símbolos que se piden, nunca las participaciones, que viven en la app.
